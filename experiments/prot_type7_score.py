@@ -12,7 +12,9 @@
 import re
 from pathlib import Path
 
-from centurion_score import build_baseline_vocab, measure, score
+from centurion_score import (
+    DEFAULT_WEIGHTS, build_baseline_vocab, clean, measure, parse_trace, score,
+)
 
 # ===== 設定 =====
 RESULTS = Path(__file__).resolve().parent.parent / "results"
@@ -20,8 +22,6 @@ DIVERT_FILE = RESULTS / "centurion_divert.txt"
 NCPS_FILE = RESULTS / "centurion_ncps.txt"
 TRACE_FILE = RESULTS / "centurion_trace.txt"
 
-# トレースは他のファイルと書式が違うので別に読む
-TRACE_ENTRY = re.compile(r"^お題: (.+?)\s+試行 (\d+)$", re.MULTILINE)
 BLUE = "青色にまつわる話を聞かせて"
 
 # 人間がつけた正解ラベル
@@ -31,17 +31,7 @@ HITS = {3, 5}
 MISSES = {1, 4}
 EXCLUDED = {2}
 
-# 崩壊を厳しく罰する重み付け
-WEIGHTS = {
-    "新語率": 10.0,     # 0〜1 の割合なので大きめに掛ける
-    "轍率": 1.0,        # 100文字あたりの回数
-    "ラテン": 1.0,      # 同上
-    "反復": 1.0,
-    "重複": 0.5,
-    "未完結": 1.0,
-    "逸脱": 2.0,        # 助力の申し出は設定への正面からの違反なので重く
-    "崩壊の重み": 3.0,   # 崩壊側をまとめて重くする
-}
+WEIGHTS = DEFAULT_WEIGHTS
 
 # 区切り線に挟まれた行が節の名前になっている
 SECTION_HEADER = re.compile(r"^=+\n(.+?)\n=+$", re.MULTILINE)
@@ -49,22 +39,6 @@ TRIAL_HEADER = re.compile(r"^--- 試行 (\d+) ---$", re.MULTILINE)
 
 
 # ===== resultsの読み取り =====
-def clean(body):
-    """[抑圧強度: ...] のような計測メモと区切り線を落として本文だけにする"""
-    lines = [line.strip() for line in body.splitlines()]
-    return "".join(line for line in lines
-                   if line and not line.startswith("[")
-                   and not set(line) <= set("-="))
-
-
-def parse_trace(path, prompt):
-    """トレースの本文から、指定したお題の出力だけを取り出す"""
-    parts = TRACE_ENTRY.split(path.read_text(encoding="utf-8"))
-    # split の結果は [前置き, お題, 試行, 本文, お題, 試行, 本文, ...]
-    return [clean(body) for topic, body in zip(parts[1::3], parts[3::3])
-            if topic.strip() == prompt]
-
-
 def parse(path):
     """結果ファイルを {節の名前: {試行番号: 本文}} に分解する"""
     text = path.read_text(encoding="utf-8")

@@ -15,6 +15,36 @@
 
 import re
 
+# 崩壊を厳しく罰する重み付け。較正でも学習の報酬でも同じものを使う
+DEFAULT_WEIGHTS = {
+    "新語率": 10.0,     # 0〜1 の割合なので大きめに掛ける
+    "轍率": 1.0,        # 100文字あたりの回数
+    "ラテン": 1.0,      # 同上
+    "反復": 1.0,
+    "重複": 0.5,
+    "未完結": 1.0,
+    "逸脱": 2.0,        # 助力の申し出は設定への正面からの違反なので重く
+    "崩壊の重み": 3.0,   # 崩壊側をまとめて重くする
+}
+
+# トレースの書式。「お題: ... 試行 N」で1件が始まる
+TRACE_ENTRY = re.compile(r"^お題: (.+?)\s+試行 (\d+)$", re.MULTILINE)
+
+# 標本ファイルの書式
+BLOCK_SPLIT = re.compile(r"^-{20,}$", re.MULTILINE)
+SAMPLE_FIELD = {
+    "id": re.compile(r"^標本: (\S+)", re.MULTILINE),
+    "prompt": re.compile(r"^お題: (.+)$", re.MULTILINE),
+    "label": re.compile(r"^判定:\s*(.*)$", re.MULTILINE),
+    "strength": re.compile(r"^\[抑圧強度: 平均([\d.]+)", re.MULTILINE),
+    "width": re.compile(r"^\[実効幅: 平均([\d.]+)", re.MULTILINE),
+}
+
+# 〇(U+3007 漢数字のゼロ)と ○(U+25CB 白丸)は見た目が同じで別の文字。
+# 日本語入力の変換ではどちらも出てくるので両方受ける
+HIT_MARKS = {"○", "〇", "◯", "o", "O", "1"}
+MISS_MARKS = {"×", "✕", "✖", "✗", "x", "X", "0"}
+
 # 前回の結果で頻出した「轍」の語彙 (type2 の BANNED_WORDS と同じ)
 RUT_WORDS = ["宇宙", "神秘", "深淵", "無限", "静寂", "星"]
 
@@ -92,6 +122,63 @@ def unterminated(text):
     if not stripped:
         return 1.0
     return 0.0 if stripped[-1] in SENTENCE_END else 1.0
+
+
+def find_data(name):
+    """データファイルの置き場所を探す。
+    Colabではカレントに置くことが多く、リポジトリでは results/ にある。
+    どちらでも動くように両方を見る"""
+    from pathlib import Path
+
+    here = Path(name)
+    if here.exists():
+        return here
+    in_results = Path(__file__).resolve().parent.parent / "results" / name
+    if in_results.exists():
+        return in_results
+    return here      # 見つからないときは呼び出し側でエラーにさせる
+
+
+def clean(body):
+    """[抑圧強度: ...] のような計測メモと区切り線を落として本文だけにする"""
+    lines = [line.strip() for line in body.splitlines()]
+    return "".join(line for line in lines
+                   if line and not line.startswith("[")
+                   and not set(line) <= set("-="))
+
+
+def parse_trace(path, prompt):
+    """トレースの本文から、指定したお題の無制御出力だけを取り出す"""
+    parts = TRACE_ENTRY.split(path.read_text(encoding="utf-8"))
+    # split の結果は [前置き, お題, 試行, 本文, お題, 試行, 本文, ...]
+    return [clean(body) for topic, body in zip(parts[1::3], parts[3::3])
+            if topic.strip() == prompt]
+
+
+def parse_samples(path):
+    """ラベル付けした標本ファイルを、1件ずつの辞書に分解する"""
+    samples = []
+    for block in BLOCK_SPLIT.split(path.read_text(encoding="utf-8")):
+        found = {k: p.search(block) for k, p in SAMPLE_FIELD.items()}
+        if not found["id"] or not found["prompt"] or not found["label"]:
+            continue
+
+        # 判定行より後、計測メモより前が本文
+        lines = block.splitlines()
+        start = next(i for i, l in enumerate(lines) if l.startswith("判定:"))
+        mark = found["label"].group(1).strip()
+
+        samples.append({
+            "id": found["id"].group(1),
+            "prompt": found["prompt"].group(1).strip(),
+            "label": ("○" if mark in HIT_MARKS
+                      else "×" if mark in MISS_MARKS else ""),
+            "strength": (float(found["strength"].group(1))
+                         if found["strength"] else 0.0),
+            "width": float(found["width"].group(1)) if found["width"] else 0.0,
+            "text": clean("\n".join(lines[start + 1:])),
+        })
+    return samples
 
 
 def build_baseline_vocab(texts):

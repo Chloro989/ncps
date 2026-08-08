@@ -135,6 +135,36 @@ class CenturionCircuitV2(nn.Module):
 
 
 # ===== 制御値への変換 =====
+# ===== 学習で動かすパラメータ =====
+# ncps は配線マスク (sparsity_mask) もParameterとして持っている。
+# これは線虫由来の結線そのもので、摂動すると回路の構造が壊れる。
+# 進化戦略の対象から必ず外すこと。非連続でもあるので
+# parameters_to_vector がそのままでは通らない
+MASK_NAME = "sparsity_mask"
+
+
+def trainable_parameters(circuit):
+    """配線マスクを除いた、学習してよいパラメータ"""
+    return [p for name, p in circuit.named_parameters() if MASK_NAME not in name]
+
+
+def pack(circuit):
+    """学習対象を1本のベクトルにまとめる"""
+    return torch.cat([p.detach().reshape(-1)
+                      for p in trainable_parameters(circuit)])
+
+
+def unpack(circuit, vector):
+    """ベクトルを回路に書き戻す。配線マスクには触れない"""
+    offset = 0
+    with torch.no_grad():
+        for p in trainable_parameters(circuit):
+            count = p.numel()
+            p.copy_(vector[offset:offset + count].view_as(p))
+            offset += count
+    return circuit
+
+
 def decode_v2(control):
     """回路の出力を、意味のある制御値に読み替える"""
     gate = control[0]
@@ -150,11 +180,11 @@ def soft_mask(width, span=SUPPRESS_SPAN, device=None):
 
 
 def apply_suppression(scores, control):
-    """回路の出力に従って上位候補を抑圧する。round()による量子化はしない"""
+    """回路の出力に従って上位候補を抑圧する。round()による量子化はしない。
+    gate も strength も sigmoid 由来で常に正なので、早期打ち切りはしない —
+    ここで .item() を呼ぶと生成のたびにGPU同期が入り、学習ループが遅くなる"""
     gate, strength, width = decode_v2(control)
     effective = gate * strength
-    if effective.item() <= 0.0:
-        return scores, effective, width
 
     _, indices = scores[0].topk(SUPPRESS_SPAN)
     mask = soft_mask(width, device=scores.device)
