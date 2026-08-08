@@ -1,0 +1,9 @@
+# 仮想環境 (ローカル専用、torchが入っていて重い)
+.venv/
+
+# Python
+__pycache__/
+*.pyc
+
+# Claude Code のマシン固有設定
+.claude/settings.local.json
