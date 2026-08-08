@@ -158,8 +158,12 @@ def build_centers(embed_fn):
 
 
 # ===== 評価 =====
-def generate_batch(model, tokenizer, prefix, circuits):
-    """母集団の全個体を1回の generate で走らせる"""
+def generate_batch(model, tokenizer, prefix, circuits, seed):
+    """母集団の全個体を1回の generate で走らせる。
+    seed を固定するのが要点 — 対称サンプリングの +ε 群と -ε 群を
+    同じ種で走らせれば、対になる個体が同じ乱数列を引く。
+    報酬の差から「サイコロの差」が消え、回路の効果だけが残る"""
+    torch.manual_seed(seed)
     inputs = tokenizer([prefix] * len(circuits), return_tensors="pt").to("cuda")
     for circuit in circuits:
         circuit.reset()
@@ -183,15 +187,17 @@ def generate_batch(model, tokenizer, prefix, circuits):
     return texts, processor.mean_strength()
 
 
-def evaluate(circuits, models, centers, collect=None):
-    """各個体の報酬を、全お題の平均で求める"""
+def evaluate(circuits, models, centers, seed_base, collect=None):
+    """各個体の報酬を、全お題の平均で求める。
+    seed_base が同じなら、別の呼び出しでも同じ乱数列で生成される"""
     tokenizer, model, embed_fn = models
     totals = np.zeros(len(circuits))
     details = [[] for _ in circuits]
 
-    for prompt in USER_PROMPTS:
+    for index, prompt in enumerate(USER_PROMPTS):
         prefix = build_prefix(tokenizer, prompt)
-        texts, strengths = generate_batch(model, tokenizer, prefix, circuits)
+        texts, strengths = generate_batch(model, tokenizer, prefix, circuits,
+                                          seed_base * 100 + index)
 
         for i, (text, strength) in enumerate(zip(texts, strengths)):
             value, parts = reward.compute(
@@ -206,13 +212,11 @@ def evaluate(circuits, models, centers, collect=None):
 
 
 # ===== 進化戦略 =====
-def make_population(base, theta, noise, sigma):
-    """theta ± sigma*noise の回路をつくる。対称サンプリング"""
-    circuits = []
-    for eps in noise:
-        for sign in (1.0, -1.0):
-            circuits.append(unpack(base(), theta + sign * sigma * eps))
-    return circuits
+def make_population(base, theta, noise, sigma, sign):
+    """theta + sign*sigma*noise の回路をつくる。
+    +ε 群と -ε 群を分けて作るのは、同じ乱数種で別々に走らせるため。
+    対になる個体を同じ行位置に置くことで、乱数列がそろう"""
+    return [unpack(base(), theta + sign * sigma * eps) for eps in noise]
 
 
 def rank_normalize(values):
@@ -248,21 +252,28 @@ def main():
     for generation in range(1, GENERATIONS + 1):
         began = time.time()
         noise = [torch.randn_like(theta) for _ in range(half)]
-        circuits = make_population(base, theta, noise, SIGMA)
 
-        rewards, details = evaluate(circuits, models, centers)
+        # 同じ種で2回走らせる。対になる個体が同じ乱数列を引く
+        plus = make_population(base, theta, noise, SIGMA, +1.0)
+        minus = make_population(base, theta, noise, SIGMA, -1.0)
+        reward_plus, detail_plus = evaluate(plus, models, centers, generation)
+        reward_minus, detail_minus = evaluate(minus, models, centers, generation)
+
+        rewards = np.concatenate([reward_plus, reward_minus])
         advantage = rank_normalize(rewards)
 
-        # 対称な対ごとに差をとって方向を推定する
+        # 対ごとの差をとって方向を推定する
         step = torch.zeros_like(theta)
         for i, eps in enumerate(noise):
-            step += (advantage[2 * i] - advantage[2 * i + 1]) * eps
+            step += (advantage[i] - advantage[half + i]) * eps
         theta += LEARNING_RATE / (POPULATION * SIGMA) * step
 
-        best = int(rewards.argmax())
+        details = detail_plus + detail_minus
         parts = reward.summarize([p for d in details for p in d])
+        # 対ごとの報酬差。同じ乱数で比べているので、これが回路の効果そのもの
+        paired = float(np.abs(reward_plus - reward_minus).mean())
         line = (f"世代{generation:3d}  報酬 平均{rewards.mean():+.3f}"
-                f" 最良{rewards.max():+.3f}"
+                f" 最良{rewards.max():+.3f} 対差{paired:.3f}"
                 f"  跳躍{parts['跳躍']:.2f} 崩壊{parts['崩壊']:.2f}"
                 f" 局所{parts['局所']:.2f} 切断{parts['切断']:.2f}"
                 f" 轍{parts['轍率']:.2f} 抑圧{parts['抑圧']:.2f}"
@@ -274,7 +285,7 @@ def main():
         if generation % SAMPLE_EVERY == 0 or generation == GENERATIONS:
             circuit = unpack(base(), theta)
             collected = []
-            evaluate([circuit], models, centers, collect=collected)
+            evaluate([circuit], models, centers, generation, collect=collected)
             log.write(f"\n--- 世代{generation} の出力 ---\n")
             for prompt, text, parts in collected:
                 log.write(f"[{prompt}]\n{text.strip()}\n")
