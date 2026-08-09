@@ -39,7 +39,18 @@ import os
 os.chdir(WORK)
 print('作業場所:', WORK)
 print('復元:', restored or 'なし(初回)')
+
+# どの版のコードを使うのかを必ず確認する。
+# 古いクローンのまま走らせて、結果を取り違えたことがある
+print('コミット:', subprocess.run(
+    ['git', '-C', str(REPO), 'log', '--oneline', '-1'],
+    capture_output=True, text=True).stdout.strip())
 ```
+
+**復元されたログとチェックポイントは前回の実行のもの**である点に注意する。
+学習を回さずに持ち帰ると、前回と同じファイルを渡すことになる。
+`centurion_train.txt` の先頭には版と開始時刻が書かれているので、
+持ち帰る前にそこを見て、今回の実行のものか確かめること。
 
 ## 実行
 

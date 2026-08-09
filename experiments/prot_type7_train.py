@@ -30,6 +30,10 @@ MODEL_NAME = "Qwen/Qwen2.5-3B-Instruct"
 CHECKPOINT = "centurion_circuit.pt"
 LOG_FILE = "centurion_train.txt"
 
+# ログがどの版で出たものかを、ログ自身に書かせる。
+# Colabの復元で古いログが混ざったとき、中身だけでは見分けがつかなかった
+VERSION = "同一乱数での対比較 (対差の列あり)"
+
 # 1回目は20世代で17分だった。1世代50秒ほどなので、倍にしても40分程度
 GENERATIONS = 40        # 世代数
 POPULATION = 12         # 個体数。対称サンプリングなので偶数にすること
@@ -246,8 +250,16 @@ def main():
           f" / 母集団{POPULATION} / {GENERATIONS}世代")
 
     half = POPULATION // 2
+    started = time.strftime("%Y-%m-%d %H:%M:%S")
+    header = (f"版: {VERSION}\n"
+              f"開始: {started}\n"
+              f"母集団{POPULATION} σ{SIGMA} 学習率{LEARNING_RATE}"
+              f" 世代{GENERATIONS}\n"
+              f"報酬: 天井{reward.JUMP_CEILING} 床{reward.FLUENCY_FLOOR}"
+              f" 局所{reward.LOCAL_FLOOR} 帯の重み{reward.W_BAND}\n")
+    print(header)
     log = open(LOG_FILE, "w", encoding="utf-8")
-    log.write(f"母集団{POPULATION} σ{SIGMA} 学習率{LEARNING_RATE}\n\n")
+    log.write(header + "\n")
 
     for generation in range(1, GENERATIONS + 1):
         began = time.time()
