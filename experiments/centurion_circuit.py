@@ -194,11 +194,12 @@ class CenturionCircuitV3(CenturionCircuitV2):
     def match_type5(self, rounds=4):
         """平均的な入力に対する出力が type5 の設定になるよう、バイアスを合わせる。
         バイアスを変えると定常状態も動くので、数回繰り返して寄せる"""
+        # 回路と同じデバイスに置く。CPUで作るとGPU実行時に落ちる
         targets = torch.tensor([
             TYPE5_GATE_MOD,
             (TYPE5_STRENGTH - V3_STRENGTH_MIN) / (V3_STRENGTH_MAX - V3_STRENGTH_MIN),
             (TYPE5_WIDTH - V3_WIDTH_MIN) / (V3_WIDTH_MAX - V3_WIDTH_MIN),
-        ]).clamp(1e-3, 1 - 1e-3)
+        ], device=self.bias.device, dtype=self.bias.dtype).clamp(1e-3, 1 - 1e-3)
 
         for _ in range(rounds):
             self.settle()
