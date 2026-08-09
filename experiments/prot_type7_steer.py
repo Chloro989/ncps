@@ -24,7 +24,12 @@ OUTPUT_FILE = "centurion_steer.txt"
 VECTOR_FILE = "centurion_steer.pt"
 
 LAYER = 24             # 全36層のうち2/3の深さ。概念が乗っているとされる帯
-STRENGTHS = [0.0, 0.5, 1.0, 2.0, 4.0]   # 隠れ状態ノルムに対する割合(%)
+
+# 隠れ状態ノルムに対する割合(%)。
+# 最初 0.5〜4% で組んだが、表現への介入は加えるベクトルのノルムが
+# 残差ストリームの10〜100%程度でようやく振る舞いが変わるのが通例で、
+# 4%では閾値以下だった可能性が高い。壊れるところまで振って境目を見る
+STRENGTHS = [0.0, 2.0, 5.0, 10.0, 20.0, 40.0]
 RUNS = 3
 MAX_TOKENS = 150
 PREFILL = "そうですね、"
@@ -81,21 +86,38 @@ def main():
     tokenizer, model = load_model()
     print(f"層数 {model.config.num_hidden_layers} / 介入する層 {LAYER}")
 
-    vector, report = build_vector(
-        model, tokenizer, USER_PROMPTS,
-        lambda p: build_prefix(tokenizer, p), LAYER)
-    print("\n方向ベクトルの材料")
-    for prompt, total, deep, shallow in report:
-        print(f"  {prompt[:14]:<16} 本文{total:4d}件 → 轍が深い{deep} / 浅い{shallow}")
+    # 同じ層のベクトルが保存済みなら作り直さない。
+    # 材料集めに212件の順伝播がかかるので、強さや層を変えて試すたびに
+    # やり直すのは無駄になる
+    saved = Path(VECTOR_FILE)
+    if saved.exists():
+        data = torch.load(saved, map_location="cpu", weights_only=False)
+        if data.get("layer") == LAYER:
+            vector, scale = data["vector"], data["scale"]
+            print(f"保存済みの方向ベクトルを使う (層{LAYER})")
+        else:
+            saved = None
+    else:
+        saved = None
 
-    # 隠れ状態の大きさを測り、強さをその割合で指定できるようにする
-    sample = hidden_at_layer(model, tokenizer,
-                             build_prefix(tokenizer, USER_PROMPTS[0]),
-                             "青は静かな色です。", LAYER)
-    scale = float(sample.norm())
-    print(f"\n隠れ状態のノルム {scale:.1f} / 方向ベクトルは単位長")
+    if saved is None:
+        vector, report = build_vector(
+            model, tokenizer, USER_PROMPTS,
+            lambda p: build_prefix(tokenizer, p), LAYER)
+        print("\n方向ベクトルの材料")
+        for prompt, total, deep, shallow in report:
+            print(f"  {prompt[:14]:<16} 本文{total:4d}件"
+                  f" → 轍が深い{deep} / 浅い{shallow}")
 
-    torch.save({"vector": vector, "layer": LAYER, "scale": scale}, VECTOR_FILE)
+        # 隠れ状態の大きさを測り、強さをその割合で指定できるようにする
+        sample = hidden_at_layer(model, tokenizer,
+                                 build_prefix(tokenizer, USER_PROMPTS[0]),
+                                 "青は静かな色です。", LAYER)
+        scale = float(sample.norm())
+        torch.save({"vector": vector, "layer": LAYER, "scale": scale},
+                   VECTOR_FILE)
+
+    print(f"隠れ状態のノルム {scale:.1f} / 方向ベクトルは単位長")
 
     trace = find_data("centurion_trace.txt")
     vocabs = {p: build_rut_vocab(parse_trace(trace, p), p) for p in USER_PROMPTS}
