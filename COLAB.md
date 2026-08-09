@@ -12,24 +12,33 @@
 from google.colab import drive
 drive.mount('/content/drive')
 
-import pathlib, shutil, subprocess
+import os, pathlib, shutil, subprocess
 
 STORE = pathlib.Path('/content/drive/MyDrive/centurion')   # 成果物の置き場
 REPO = pathlib.Path('/content/ncps')                       # コード
 WORK = REPO / 'experiments'
 STORE.mkdir(parents=True, exist_ok=True)
 
+# 消す前に、消す対象の外へ出ておく。
+# 作業場所の中に居たまま消すとカレントディレクトリが無効になり、
+# 直後の git が exit 128 で落ちる(セルを2回目に実行したときに必ず起きる)
+os.chdir('/content')
+
 # 毎回まっさらにクローンし直す。
 # 古いクローンを更新する方式にしていたら、前回の出力が残って
 # 実行していない結果を持ち帰る事故が2回起きた。作り直すほうが安全で速い
 if REPO.exists():
     shutil.rmtree(REPO)
-subprocess.run(['git', 'clone', '-q',
-                'https://github.com/Chloro989/ncps', str(REPO)], check=True)
+
+# -q は使わない。失敗したときに理由が見えなくなる
+result = subprocess.run(
+    ['git', 'clone', 'https://github.com/Chloro989/ncps', str(REPO)],
+    capture_output=True, text=True)
+if result.returncode != 0:
+    raise SystemExit('clone に失敗:\n' + result.stderr)
 
 subprocess.run(['pip', 'install', '-q', 'ncps'], check=True)
 
-import os
 os.chdir(WORK)
 print('作業場所:', WORK)
 print('コミット:', subprocess.run(
