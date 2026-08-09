@@ -21,9 +21,13 @@ EVAL_FILE = RESULTS / "centurion_eval.txt"
 
 # 条件と試行数は評価ファイルの見出しから読む。
 # 手で同期させていると、条件を増やしたときに答え合わせが静かに狂う
-SHUFFLE_SEED = 20260809
+# 種は評価ファイルに書かれていればそれを使い、無ければ既知の種を順に試す。
+# 生成側で種を変えたのに答え合わせ側が古いままで、再現に失敗したことがある。
+# お題の照合で検出はできるが、そもそも取り違えようのない形にしておく
+KNOWN_SEEDS = [20260809, 20260810]
 HEADER_CONDITIONS = re.compile(r"^条件\(順不同\): (.+)$", re.MULTILINE)
 HEADER_RUNS = re.compile(r"^試行数: (\d+)$", re.MULTILINE)
+HEADER_SEED = re.compile(r"^乱数種: (\d+)$", re.MULTILINE)
 FALLBACK_CONDITIONS = ["未学習", "学習済み", "制御なし"]
 FALLBACK_RUNS = 3
 USER_PROMPTS = [
@@ -37,7 +41,9 @@ BLOCK = re.compile(r"^-{20,}$", re.MULTILINE)
 FIELD = {
     "id": re.compile(r"^標本(\d+)", re.MULTILINE),
     "prompt": re.compile(r"^お題: (.+)$", re.MULTILINE),
-    "label": re.compile(r"^判定:\s*(.*)$", re.MULTILINE),
+    # \s* だと改行を越えて本文の1行目を拾ってしまう。
+    # 判定欄が空のときにこれが起き、未判定が「変な書き込み」に見えていた
+    "label": re.compile(r"^判定:[^\S\n]*(.*)$", re.MULTILINE),
 }
 # 〇(U+3007)と○(U+25CB)は見た目が同じで別の文字。両方受ける
 HIT = {"○", "〇", "◯", "o", "O"}
@@ -64,24 +70,36 @@ def parse_eval(path):
 
 
 def read_setup(path):
-    """評価ファイルの見出しから条件と試行数を読む"""
+    """評価ファイルの見出しから条件・試行数・乱数種を読む"""
     text = path.read_text(encoding="utf-8")
     found = HEADER_CONDITIONS.search(text)
     conditions = ([c.strip() for c in found.group(1).split("/")]
                   if found else FALLBACK_CONDITIONS)
     found = HEADER_RUNS.search(text)
     runs = int(found.group(1)) if found else FALLBACK_RUNS
-    return conditions, runs
+    found = HEADER_SEED.search(text)
+    seeds = [int(found.group(1))] if found else KNOWN_SEEDS
+    return conditions, runs, seeds
 
 
-def rebuild_key(conditions, runs):
+def rebuild_key(conditions, runs, seed):
     """生成順とシャッフルの種から対応表を再現する"""
     order = [(name, prompt)
              for name in conditions
              for prompt in USER_PROMPTS
              for _ in range(runs)]
-    random.Random(SHUFFLE_SEED).shuffle(order)
+    random.Random(seed).shuffle(order)
     return order
+
+
+def find_key(rows, conditions, runs, seeds):
+    """お題が全件一致する種を探す。書かれていない古いファイルでも復元できる"""
+    for seed in seeds:
+        key = rebuild_key(conditions, runs, seed)
+        if len(key) == len(rows) and all(
+                r["prompt"] == prompt for r, (_, prompt) in zip(rows, key)):
+            return key, seed
+    raise SystemExit(f"対応表を再現できない。試した種: {seeds}")
 
 
 def tally(rows):
@@ -108,15 +126,10 @@ def report(title, groups):
 
 def main():
     rows = parse_eval(EVAL_FILE)
-    conditions, runs = read_setup(EVAL_FILE)
-    key = rebuild_key(conditions, runs)
-    print(f"条件 {' / '.join(conditions)} / 試行数 {runs}")
-    print(f"標本 {len(rows)}件 / 対応表 {len(key)}件")
-
-    mismatched = [r["id"] for r, (_, prompt) in zip(rows, key)
-                  if r["prompt"] != prompt]
-    if mismatched:
-        raise SystemExit(f"再現に失敗。お題が一致しない標本: {mismatched}")
+    conditions, runs, seeds = read_setup(EVAL_FILE)
+    key, seed = find_key(rows, conditions, runs, seeds)
+    print(f"条件 {' / '.join(conditions)} / 試行数 {runs} / 乱数種 {seed}")
+    print(f"標本 {len(rows)}件")
     print(f"検証: {len(rows)}件すべてでお題が一致。対応表の再現は正しい")
 
     for row, (name, _) in zip(rows, key):

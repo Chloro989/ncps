@@ -130,6 +130,8 @@ def main():
         out.write("センチュリオン: 盲検評価\n")
         out.write(f"条件(順不同): {' / '.join(conditions)}\n")
         out.write(f"試行数: {RUNS}\n")
+        # 種も書いておく。答え合わせ側と手で同期させていると必ずずれる
+        out.write(f"乱数種: {SHUFFLE_SEED}\n")
         out.write("どの出力がどの条件かは伏せてあります。\n")
         out.write("判定は2段階です。\n")
         out.write("  まず崩壊しているものを × にしてください。\n")
