@@ -19,38 +19,33 @@ REPO = pathlib.Path('/content/ncps')                       # コード
 WORK = REPO / 'experiments'
 STORE.mkdir(parents=True, exist_ok=True)
 
-# コードを取得。2回目以降は最新に更新するだけ
-if (REPO / '.git').exists():
-    subprocess.run(['git', '-C', str(REPO), 'pull', '-q'], check=True)
-else:
-    subprocess.run(['git', 'clone', '-q',
-                    'https://github.com/Chloro989/ncps', str(REPO)], check=True)
-
-# 前回までの成果物を作業場所へ戻す
-restored = []
-for path in STORE.iterdir():
-    if path.is_file():
-        shutil.copy2(path, WORK / path.name)
-        restored.append(path.name)
+# 毎回まっさらにクローンし直す。
+# 古いクローンを更新する方式にしていたら、前回の出力が残って
+# 実行していない結果を持ち帰る事故が2回起きた。作り直すほうが安全で速い
+if REPO.exists():
+    shutil.rmtree(REPO)
+subprocess.run(['git', 'clone', '-q',
+                'https://github.com/Chloro989/ncps', str(REPO)], check=True)
 
 subprocess.run(['pip', 'install', '-q', 'ncps'], check=True)
 
 import os
 os.chdir(WORK)
 print('作業場所:', WORK)
-print('復元:', restored or 'なし(初回)')
-
-# どの版のコードを使うのかを必ず確認する。
-# 古いクローンのまま走らせて、結果を取り違えたことがある
 print('コミット:', subprocess.run(
-    ['git', '-C', str(REPO), 'log', '--oneline', '-1'],
+    ['git', 'log', '--oneline', '-1'],
     capture_output=True, text=True).stdout.strip())
 ```
 
-**復元されたログとチェックポイントは前回の実行のもの**である点に注意する。
-学習を回さずに持ち帰ると、前回と同じファイルを渡すことになる。
-`centurion_train.txt` の先頭には版と開始時刻が書かれているので、
-持ち帰る前にそこを見て、今回の実行のものか確かめること。
+学習に必要な入力(`centurion_trace.npz` と `centurion_trace.txt`)は
+**リポジトリに入っている**ので、Drive から戻す必要はない。
+Drive は成果物を持ち出すためだけに使う。
+
+前回の続きから学習を再開したいときだけ、次を追加で実行する。
+
+```python
+shutil.copy2(STORE / 'centurion_circuit.pt', WORK / 'centurion_circuit.pt')
+```
 
 ## 実行
 
@@ -69,15 +64,25 @@ import pathlib, shutil
 STORE = pathlib.Path('/content/drive/MyDrive/centurion')
 WORK = pathlib.Path('/content/ncps/experiments')
 
+# 実行して作られたものだけを保存する。入力ファイルはリポジトリにあるので触らない
 saved = []
-for pattern in ('centurion_*.npz', 'centurion_*.pt',
-                'centurion_train.txt', 'centurion_samples.txt',
-                'centurion_trace.txt', 'centurion_fluency.npz'):
-    for path in WORK.glob(pattern):
-        shutil.copy2(path, STORE / path.name)
-        saved.append(path.name)
-print('保存:', sorted(set(saved)))
+for name in ('centurion_train.txt', 'centurion_circuit.pt',
+             'centurion_samples.txt', 'centurion_fluency.npz'):
+    path = WORK / name
+    if path.exists():
+        shutil.copy2(path, STORE / name)
+        saved.append(name)
+print('保存:', saved)
+
+# 持ち帰る前に、それが今回の実行のものか確かめる
+log = WORK / 'centurion_train.txt'
+if log.exists():
+    print('\n--- ログの先頭 ---')
+    print('\n'.join(log.read_text(encoding='utf-8').splitlines()[:5]))
 ```
+
+最後に表示される「版」と「開始」が今回の実行のものであることを確認してから
+ダウンロードする。ここが前回と同じなら、学習は走っていない。
 
 ## 長い学習を回すとき
 

@@ -32,7 +32,16 @@ LOG_FILE = "centurion_train.txt"
 
 # ログがどの版で出たものかを、ログ自身に書かせる。
 # Colabの復元で古いログが混ざったとき、中身だけでは見分けがつかなかった
-VERSION = "同一乱数での対比較 (対差の列あり)"
+VERSION = "貪欲法での評価 (サンプリングのノイズを断つ)"
+
+# 評価を貪欲法で行うか。
+# サンプリングだと報酬が120トークンぶんのサイコロに支配され、
+# 3回の学習でいずれも勾配が読み取れなかった。
+# 同一乱数でもノイズは19%しか減らなかった —
+# 抑圧で1トークン変われば、そこから先は別の文になるため。
+# 貪欲法にすれば報酬は回路の決定的な関数になり、抑圧だけが変化の源になる。
+# 実運用のサンプリングとはずれるので、学習後に必ず再評価すること
+EVAL_GREEDY = True
 
 # 1回目は20世代で17分だった。1世代50秒ほどなので、倍にしても40分程度
 GENERATIONS = 40        # 世代数
@@ -173,17 +182,20 @@ def generate_batch(model, tokenizer, prefix, circuits, seed):
         circuit.reset()
 
     processor = BatchedSuppressor(circuits)
+    kwargs = dict(
+        max_new_tokens=MAX_TOKENS,
+        logits_processor=LogitsProcessorList([processor]),
+        pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
+    )
+    if EVAL_GREEDY:
+        # 貪欲法では抑圧だけが選択を変える。回路の効果が最も見えやすい
+        kwargs["do_sample"] = False
+    else:
+        kwargs.update(do_sample=True, temperature=1.0,
+                      min_p=MIN_P, top_p=TOP_P)
+
     with torch.no_grad():
-        output = model.generate(
-            **inputs,
-            max_new_tokens=MAX_TOKENS,
-            do_sample=True,
-            temperature=1.0,
-            min_p=MIN_P,
-            top_p=TOP_P,
-            logits_processor=LogitsProcessorList([processor]),
-            pad_token_id=tokenizer.pad_token_id or tokenizer.eos_token_id,
-        )
+        output = model.generate(**inputs, **kwargs)
 
     start = inputs.input_ids.shape[1]
     texts = [PREFILL + tokenizer.decode(row[start:], skip_special_tokens=True)
@@ -253,6 +265,7 @@ def main():
     started = time.strftime("%Y-%m-%d %H:%M:%S")
     header = (f"版: {VERSION}\n"
               f"開始: {started}\n"
+              f"評価: {'貪欲法' if EVAL_GREEDY else 'サンプリング'}\n"
               f"母集団{POPULATION} σ{SIGMA} 学習率{LEARNING_RATE}"
               f" 世代{GENERATIONS}\n"
               f"報酬: 天井{reward.JUMP_CEILING} 床{reward.FLUENCY_FLOOR}"
