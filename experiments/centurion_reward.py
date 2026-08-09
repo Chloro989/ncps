@@ -21,7 +21,9 @@ Phase 3 で確実に分かった構造をそのまま形にしている:
 import numpy as np
 import torch
 
-from centurion_score import persona_break, rut_rate, unterminated
+from centurion_score import (
+    persona_break, rut_rate, rut_rate_vocab, unterminated,
+)
 
 # ===== 報酬の形 =====
 # 跳躍の頭打ち。1回目は0.13で第1世代から飽和していたので上げた
@@ -47,7 +49,20 @@ STRENGTH_TARGET = 2.1
 W_JUMP = 1.0          # 轍から出た分の報酬 (0〜1に正規化済み)
 W_BREAK = 2.0         # 全体の崩壊。跳躍より重くして、壊すくらいなら跳ばせない
 W_LOCAL = 1.5         # 局所の破れ。対比較で負けた唯一の原因がこれだった
-W_RUT = 0.3           # 轍語彙 (100文字あたりの回数、実測で0〜4程度)
+# 轍の罰は世代が進むにつれて重くする。
+# type5固定 が盲検で12戦12勝し「読める」は既に天井に達したので、
+# 重心を轍からの脱出へ徐々に移す。最初から重くすると、
+# まだ読める状態を確保できていないうちに壊しにいく
+W_RUT_START = 0.3
+W_RUT_END = 1.5
+
+
+def rut_weight(progress):
+    """progress は 0(最初の世代)から 1(最後の世代)"""
+    return W_RUT_START + (W_RUT_END - W_RUT_START) * min(max(progress, 0.0), 1.0)
+
+
+W_RUT = W_RUT_START   # 轍語彙 (100文字あたりの回数、実測で0〜4程度)
 W_PERSONA = 0.5       # 助力の申し出やAIへの言及
 W_UNTERMINATED = 0.15 # 途中切断。破格より軽い — 切断された出力も対比較で勝っている
 W_BAND = 0.02         # 抑圧強度の帯。1回目で役目を終えたので大きく下げる
@@ -80,8 +95,10 @@ def jump_distance(text, center, embed_fn, split_fn):
 
 
 def compute(text, center, strength_mean, model, tokenizer, prefix,
-            embed_fn, split_fn, prefill=""):
-    """1つの出力の報酬と、その内訳を返す"""
+            embed_fn, split_fn, prefill="", rut_vocab=None, w_rut=None):
+    """1つの出力の報酬と、その内訳を返す。
+    rut_vocab を渡すとお題ごとの実測轍語彙で測る。
+    w_rut を渡すと轍の罰の重みを差し替える(世代による移行に使う)"""
     body = text[len(prefill):] if prefill and text.startswith(prefill) else text
 
     jump = min(jump_distance(text, center, embed_fn, split_fn), JUMP_CEILING)
@@ -97,7 +114,9 @@ def compute(text, center, strength_mean, model, tokenizer, prefix,
     breakdown = max(0.0, FLUENCY_FLOOR - fluency)
     local_break = max(0.0, LOCAL_FLOOR - local)
 
-    rut = rut_rate(text)
+    rut = (rut_rate_vocab(text, rut_vocab) if rut_vocab
+           else rut_rate(text))
+    weight = W_RUT if w_rut is None else w_rut
     persona = persona_break(text)
     cut = unterminated(text)
     band = abs(strength_mean - STRENGTH_TARGET)
@@ -105,7 +124,7 @@ def compute(text, center, strength_mean, model, tokenizer, prefix,
     total = (W_JUMP * jump
              - W_BREAK * breakdown
              - W_LOCAL * local_break
-             - W_RUT * rut
+             - weight * rut
              - W_PERSONA * persona
              - W_UNTERMINATED * cut
              - W_BAND * band)

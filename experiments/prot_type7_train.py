@@ -32,7 +32,8 @@ LOG_FILE = "centurion_train.txt"
 
 # ログがどの版で出たものかを、ログ自身に書かせる。
 # Colabの復元で古いログが混ざったとき、中身だけでは見分けがつかなかった
-VERSION = "V3 (エントロピーの門を構造として持つ) / 貪欲法での評価"
+VERSION = ("V3 / type5の設定から開始 / 轍語彙はお題ごとの実測 /"
+           " 轍の罰を世代とともに重くする")
 
 # 分岐点かどうかの基準。門が働いているかをログで見るためだけに使う
 GATE_REFERENCE = 3.5
@@ -181,8 +182,10 @@ def parse_trace_texts(path, prompt):
 
 
 def build_centers(embed_fn):
-    """お題ごとに、無制御出力の重心を求める"""
-    centers = {}
+    """お題ごとに、無制御出力の重心と轍語彙を求める"""
+    from centurion_score import build_rut_vocab
+
+    centers, vocabs = {}, {}
     for prompt in USER_PROMPTS:
         texts = parse_trace_texts(TRACE_TEXT, prompt)
         if not texts:
@@ -190,7 +193,9 @@ def build_centers(embed_fn):
         vectors = embed_fn(texts)
         centers[prompt] = torch.nn.functional.normalize(
             vectors.mean(dim=0), dim=-1)
-    return centers
+        vocabs[prompt] = build_rut_vocab(texts, prompt)
+        print(f"轍語彙 {len(vocabs[prompt])}語 ({len(texts)}件から): {prompt}")
+    return centers, vocabs
 
 
 # ===== 評価 =====
@@ -226,7 +231,8 @@ def generate_batch(model, tokenizer, prefix, circuits, seed):
     return texts, processor.mean_strength(), processor.gate_ratio()
 
 
-def evaluate(circuits, models, centers, seed_base, collect=None):
+def evaluate(circuits, models, centers, seed_base, collect=None,
+             vocabs=None, w_rut=None):
     """各個体の報酬を、全お題の平均で求める。
     seed_base が同じなら、別の呼び出しでも同じ乱数列で生成される"""
     tokenizer, model, embed_fn = models
@@ -242,7 +248,9 @@ def evaluate(circuits, models, centers, seed_base, collect=None):
                 zip(texts, strengths, ratios)):
             value, parts = reward.compute(
                 text, centers[prompt], strength, model, tokenizer, prefix,
-                embed_fn, sentences, prefill=PREFILL)
+                embed_fn, sentences, prefill=PREFILL,
+                rut_vocab=vocabs.get(prompt) if vocabs else None,
+                w_rut=w_rut)
             parts["門比"] = ratio
             totals[i] += value / len(USER_PROMPTS)
             details[i].append(parts)
@@ -273,7 +281,7 @@ def main():
 
     tokenizer, model, embed_tokenizer, embed_model = load_all()
     embed_fn = make_embed_fn(embed_tokenizer, embed_model)
-    centers = build_centers(embed_fn)
+    centers, vocabs = build_centers(embed_fn)
     models = (tokenizer, model, embed_fn)
 
     def base():
@@ -281,7 +289,8 @@ def main():
 
     torch.manual_seed(0)
     start_circuit = base()
-    start_circuit.settle()      # 平均入力の定常状態から始める
+    # 盲検で12戦12勝した type5 の設定から探索を始める
+    start_circuit.match_type5()
     theta = pack(start_circuit).clone()
     print(f"回路: 学習対象 {theta.numel()}パラメータ (配線マスクは除外)"
           f" / 母集団{POPULATION} / {GENERATIONS}世代")
@@ -306,8 +315,12 @@ def main():
         # 同じ種で2回走らせる。対になる個体が同じ乱数列を引く
         plus = make_population(base, theta, noise, SIGMA, +1.0)
         minus = make_population(base, theta, noise, SIGMA, -1.0)
-        reward_plus, detail_plus = evaluate(plus, models, centers, generation)
-        reward_minus, detail_minus = evaluate(minus, models, centers, generation)
+        # 轍の罰を世代とともに重くする。読めることを確保してから轍へ寄せる
+        w_rut = reward.rut_weight((generation - 1) / max(GENERATIONS - 1, 1))
+        reward_plus, detail_plus = evaluate(
+            plus, models, centers, generation, vocabs=vocabs, w_rut=w_rut)
+        reward_minus, detail_minus = evaluate(
+            minus, models, centers, generation, vocabs=vocabs, w_rut=w_rut)
 
         rewards = np.concatenate([reward_plus, reward_minus])
         advantage = rank_normalize(rewards)
@@ -326,8 +339,8 @@ def main():
                 f" 最良{rewards.max():+.3f} 対差{paired:.3f}"
                 f"  跳躍{parts['跳躍']:.2f} 崩壊{parts['崩壊']:.2f}"
                 f" 局所{parts['局所']:.2f} 切断{parts['切断']:.2f}"
-                f" 轍{parts['轍率']:.2f} 抑圧{parts['抑圧']:.2f}"
-                f" 門比{parts['門比']:.1f}"
+                f" 轍{parts['轍率']:.2f}(重み{w_rut:.2f})"
+                f" 抑圧{parts['抑圧']:.2f} 門比{parts['門比']:.1f}"
                 f"  {time.time() - began:.0f}秒")
         print(line)
         log.write(line + "\n")
@@ -336,7 +349,8 @@ def main():
         if generation % SAMPLE_EVERY == 0 or generation == GENERATIONS:
             circuit = unpack(base(), theta)
             collected = []
-            evaluate([circuit], models, centers, generation, collect=collected)
+            evaluate([circuit], models, centers, generation, collect=collected,
+                     vocabs=vocabs, w_rut=w_rut)
             log.write(f"\n--- 世代{generation} の出力 ---\n")
             for prompt, text, parts in collected:
                 log.write(f"[{prompt}]\n{text.strip()}\n")

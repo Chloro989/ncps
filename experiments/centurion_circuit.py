@@ -162,6 +162,13 @@ V3_STRENGTH_MAX = 3.0
 V3_WIDTH_MIN = 0.3        # 実効的に上位1〜2個
 V3_WIDTH_MAX = 1.5        # 実効的に上位3〜4個。type5 の「上位2個」に対応する幅
 
+# 学習の出発点。盲検で12戦12勝した type5 の設定に合わせる。
+# 未学習V3は分岐点での実効抑圧が0.48しかなく、type5の2.0に遠く及ばなかった。
+# 検証済みの点から始めるほうが、偶然そこへ辿り着くのを待つより確か
+TYPE5_GATE_MOD = 0.95     # 門が開いているときはほぼ全開にする
+TYPE5_STRENGTH = 2.1      # type5 の 2.0 相当
+TYPE5_WIDTH = 0.5         # 減衰が速く、実効的に上位2個になる幅
+
 
 class CenturionCircuitV3(CenturionCircuitV2):
     """エントロピーの門を構造として持つ回路。
@@ -183,6 +190,23 @@ class CenturionCircuitV3(CenturionCircuitV2):
                      + torch.sigmoid(self.raw_threshold)
                      * (THRESHOLD_MAX - THRESHOLD_MIN))
         return torch.sigmoid((entropy - threshold) * SHARPNESS)
+
+    def match_type5(self, rounds=4):
+        """平均的な入力に対する出力が type5 の設定になるよう、バイアスを合わせる。
+        バイアスを変えると定常状態も動くので、数回繰り返して寄せる"""
+        targets = torch.tensor([
+            TYPE5_GATE_MOD,
+            (TYPE5_STRENGTH - V3_STRENGTH_MIN) / (V3_STRENGTH_MAX - V3_STRENGTH_MIN),
+            (TYPE5_WIDTH - V3_WIDTH_MIN) / (V3_WIDTH_MAX - V3_WIDTH_MIN),
+        ]).clamp(1e-3, 1 - 1e-3)
+
+        for _ in range(rounds):
+            self.settle()
+            with torch.no_grad():
+                raw = self.forward(self.feat_mean).clamp(1e-3, 1 - 1e-3)
+                # sigmoidの逆関数で、必要なバイアスのずれを求める
+                self.bias += torch.logit(targets) - torch.logit(raw)
+        self.settle()
 
     def control(self, features):
         """実効抑圧と実効幅を返す。features[0] は素のエントロピー"""

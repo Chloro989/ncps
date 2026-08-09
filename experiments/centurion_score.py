@@ -71,6 +71,31 @@ def words(text):
     return WORD_PATTERN.findall(text)
 
 
+def build_rut_vocab(texts, prompt="", min_docs=2):
+    """無制御の出力に繰り返し現れる語。そのお題での轍そのもの。
+    固定リスト(宇宙/神秘/深淵…)は青色専用で、
+    「朝の匂い→山脈」のようなお題ごとの轍を拾えなかった。
+    1回だけ出た語は偶然なので、2つ以上の出力に現れたものだけを取る。
+
+    お題そのものに含まれる語は外す。「青色」の話で「青色」を罰すると、
+    主題を名指すことを避ける歪んだ文章になってしまう"""
+    excluded = set(words(prompt))
+    counts = {}
+    for text in texts:
+        for word in set(words(text)):
+            counts[word] = counts.get(word, 0) + 1
+    return {word for word, count in counts.items()
+            if count >= min_docs and word not in excluded}
+
+
+def rut_rate_vocab(text, vocab):
+    """お題ごとの轍語が、100文字あたり何回出るか"""
+    if not text or not vocab:
+        return 0.0
+    hits = sum(1 for word in words(text) if word in vocab)
+    return hits / len(text) * 100
+
+
 def rut_rate(text):
     """轍語が100文字あたり何回出るか"""
     if not text:
