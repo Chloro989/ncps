@@ -135,6 +135,72 @@ class CenturionCircuitV2(nn.Module):
 
 
 # ===== 制御値への変換 =====
+# ===== V3: type5 の構造に閉じ込めた回路 =====
+# V2は自由度を与えすぎた。学習の結果、門をまったく使わず
+# 分岐点でもそれ以外でも同じ強さ(比0.96)で、上位8個すべてに広く抑圧していた。
+# これは type5 の正反対で、失敗した type6 と同じ振る舞い。
+# 報酬のどの項も「分岐点だけを叩け」と要求していなかったのが原因。
+#
+# V3では選択性を報酬に頼らず構造で保証する。
+# 抑圧の上限をエントロピーの単調関数で押さえ、
+# 回路はその内側で強さと幅を調整することしかできない。
+# 低エントロピーの箇所を叩くことは、回路がどう学んでも不可能になる。
+# 閾値の下限は3.0にする。エントロピーの中央値が1.93なので、
+# これ以下に下げられると門が開きっぱなしになり選択性が消える
+THRESHOLD_MIN = 3.0
+THRESHOLD_MAX = 5.0
+THRESHOLD_INIT = 3.5      # type5 が使っていた値
+
+# 門の切れ味は学習させない。定数にする。
+# 最初これを学習対象にしたところ、パラメータを大きく摂動すると
+# 切れ味が0に潰れて門が平坦になり、選択性が消えることが分かった。
+# 前回の学習は報酬の穴を突いて退化解に落ちたので、ここも必ず突かれる
+SHARPNESS = 4.0
+
+V3_STRENGTH_MIN = 1.0     # type5 の 2.0 を挟む範囲
+V3_STRENGTH_MAX = 3.0
+V3_WIDTH_MIN = 0.3        # 実効的に上位1〜2個
+V3_WIDTH_MAX = 1.5        # 実効的に上位3〜4個。type5 の「上位2個」に対応する幅
+
+
+class CenturionCircuitV3(CenturionCircuitV2):
+    """エントロピーの門を構造として持つ回路。
+    門の閾値と切れ味も学習するが、門そのものは外せない"""
+
+    def __init__(self, stats=None):
+        super().__init__(stats)
+        # 閾値はsigmoidで範囲に写す。初期値がちょうど THRESHOLD_INIT になるようにする
+        span = THRESHOLD_MAX - THRESHOLD_MIN
+        start = (THRESHOLD_INIT - THRESHOLD_MIN) / span
+        self.raw_threshold = nn.Parameter(
+            torch.tensor(float(np.log(start / (1 - start)))))
+
+    def gate_from_entropy(self, entropy):
+        """エントロピーだけで決まる、抑圧の上限。回路はこれを超えられない。
+        切れ味が定数で、閾値もsigmoidで範囲に閉じているので、
+        パラメータをどう動かしても門を平坦にはできない"""
+        threshold = (THRESHOLD_MIN
+                     + torch.sigmoid(self.raw_threshold)
+                     * (THRESHOLD_MAX - THRESHOLD_MIN))
+        return torch.sigmoid((entropy - threshold) * SHARPNESS)
+
+    def control(self, features):
+        """実効抑圧と実効幅を返す。features[0] は素のエントロピー"""
+        raw = self.forward(features)          # V2と同じ3出力 (0〜1)
+        gate = self.gate_from_entropy(features[0]) * raw[0]
+        strength = V3_STRENGTH_MIN + raw[1] * (V3_STRENGTH_MAX - V3_STRENGTH_MIN)
+        width = V3_WIDTH_MIN + raw[2] * (V3_WIDTH_MAX - V3_WIDTH_MIN)
+        return gate * strength, width
+
+
+def apply_values(scores, effective, width):
+    """決まった強さと幅で上位候補を抑圧する"""
+    _, indices = scores[0].topk(SUPPRESS_SPAN)
+    mask = soft_mask(width, device=scores.device)
+    scores[0, indices] -= effective * mask
+    return scores
+
+
 # ===== 学習で動かすパラメータ =====
 # ncps は配線マスク (sparsity_mask) もParameterとして持っている。
 # これは線虫由来の結線そのもので、摂動すると回路の構造が壊れる。

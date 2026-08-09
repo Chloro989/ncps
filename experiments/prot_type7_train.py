@@ -20,7 +20,7 @@ from transformers import (AutoModel, AutoModelForCausalLM, AutoTokenizer,
 
 import centurion_reward as reward
 from centurion_circuit import (
-    CenturionCircuitV2, apply_suppression, load_stats, pack, unpack,
+    CenturionCircuitV3, apply_values, load_stats, pack, unpack,
 )
 from centurion_score import find_data
 from centurion_embed import MODEL_NAME as EMBED_NAME, PREFIX, sentences
@@ -32,7 +32,10 @@ LOG_FILE = "centurion_train.txt"
 
 # ログがどの版で出たものかを、ログ自身に書かせる。
 # Colabの復元で古いログが混ざったとき、中身だけでは見分けがつかなかった
-VERSION = "貪欲法での評価 (サンプリングのノイズを断つ)"
+VERSION = "V3 (エントロピーの門を構造として持つ) / 貪欲法での評価"
+
+# 分岐点かどうかの基準。門が働いているかをログで見るためだけに使う
+GATE_REFERENCE = 3.5
 
 # 評価を貪欲法で行うか。
 # サンプリングだと報酬が120トークンぶんのサイコロに支配され、
@@ -84,6 +87,7 @@ class BatchedSuppressor(LogitsProcessor):
     def __init__(self, circuits):
         self.circuits = circuits
         self.history = [[] for _ in circuits]
+        self.entropies = [[] for _ in circuits]
         self.step = 0
 
     def __call__(self, input_ids, scores):
@@ -99,12 +103,12 @@ class BatchedSuppressor(LogitsProcessor):
         for row, circuit in enumerate(self.circuits):
             features = torch.stack([entropy[row], top1[row], top5[row], step])
             with torch.no_grad():
-                control = circuit(features)
+                effective, width = circuit.control(features)
 
-            # apply_suppression は (1, 語彙) を前提にしている。
             # scores[row:row+1] はビューなので、書き戻しは要らない
-            _, strength, _ = apply_suppression(scores[row:row + 1], control)
-            self.history[row].append(strength.detach())
+            apply_values(scores[row:row + 1], effective, width)
+            self.history[row].append(effective.detach())
+            self.entropies[row].append(entropy[row].detach())
 
         self.step += 1
         return scores
@@ -113,6 +117,25 @@ class BatchedSuppressor(LogitsProcessor):
         """テンソルのまま溜めておき、ここで一度だけCPUに落とす"""
         return [torch.stack(h).mean().item() if h else 0.0
                 for h in self.history]
+
+    def gate_ratio(self):
+        """分岐点とそれ以外で、抑圧の強さがどれだけ違うか。
+        1.0付近なら門が働いていない — V2がそうだった"""
+        ratios = []
+        for strengths, entropies in zip(self.history, self.entropies):
+            if not strengths:
+                ratios.append(1.0)
+                continue
+            value = torch.stack(strengths)
+            level = torch.stack(entropies)
+            branch = level >= GATE_REFERENCE
+            if branch.any() and (~branch).any():
+                high = value[branch].mean().item()
+                low = value[~branch].mean().item()
+                ratios.append(high / max(low, 1e-6))
+            else:
+                ratios.append(1.0)
+        return ratios
 
 
 # ===== モデル =====
@@ -200,7 +223,7 @@ def generate_batch(model, tokenizer, prefix, circuits, seed):
     start = inputs.input_ids.shape[1]
     texts = [PREFILL + tokenizer.decode(row[start:], skip_special_tokens=True)
              for row in output]
-    return texts, processor.mean_strength()
+    return texts, processor.mean_strength(), processor.gate_ratio()
 
 
 def evaluate(circuits, models, centers, seed_base, collect=None):
@@ -212,13 +235,15 @@ def evaluate(circuits, models, centers, seed_base, collect=None):
 
     for index, prompt in enumerate(USER_PROMPTS):
         prefix = build_prefix(tokenizer, prompt)
-        texts, strengths = generate_batch(model, tokenizer, prefix, circuits,
-                                          seed_base * 100 + index)
+        texts, strengths, ratios = generate_batch(
+            model, tokenizer, prefix, circuits, seed_base * 100 + index)
 
-        for i, (text, strength) in enumerate(zip(texts, strengths)):
+        for i, (text, strength, ratio) in enumerate(
+                zip(texts, strengths, ratios)):
             value, parts = reward.compute(
                 text, centers[prompt], strength, model, tokenizer, prefix,
                 embed_fn, sentences, prefill=PREFILL)
+            parts["門比"] = ratio
             totals[i] += value / len(USER_PROMPTS)
             details[i].append(parts)
             if collect is not None and i == 0:
@@ -252,7 +277,7 @@ def main():
     models = (tokenizer, model, embed_fn)
 
     def base():
-        return CenturionCircuitV2((mean, std)).to("cuda")
+        return CenturionCircuitV3((mean, std)).to("cuda")
 
     torch.manual_seed(0)
     start_circuit = base()
@@ -302,6 +327,7 @@ def main():
                 f"  跳躍{parts['跳躍']:.2f} 崩壊{parts['崩壊']:.2f}"
                 f" 局所{parts['局所']:.2f} 切断{parts['切断']:.2f}"
                 f" 轍{parts['轍率']:.2f} 抑圧{parts['抑圧']:.2f}"
+                f" 門比{parts['門比']:.1f}"
                 f"  {time.time() - began:.0f}秒")
         print(line)
         log.write(line + "\n")
@@ -317,8 +343,10 @@ def main():
                 log.write(f"(跳躍{parts['跳躍']:.2f} 尤度{parts['尤度']:.2f}"
                           f" 局所{parts['局所']:.2f} 抑圧{parts['抑圧']:.2f})\n\n")
             log.flush()
+            # 版を書いておく。評価側がV2とV3を取り違えないため
             torch.save({"theta": theta.cpu(), "mean": mean, "std": std,
-                        "generation": generation}, CHECKPOINT)
+                        "generation": generation, "version": "V3"},
+                       CHECKPOINT)
 
     log.close()
     print(f"完了: {CHECKPOINT} と {LOG_FILE}")
