@@ -25,19 +25,25 @@ from pathlib import Path
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from centurion_prompts import PREFILL, USER_PROMPTS, build_prefix
+from centurion_prompts import (
+    BANNED_WORDS, PREFILL, USER_PROMPTS, build_prefix,
+)
 from centurion_score import build_rut_vocab, find_data, parse_trace, rut_rate_vocab
 
 MODEL_NAME = "Qwen/Qwen2.5-3B-Instruct"
 OUTPUT_FILE = "centurion_eval.txt"
 KEY_FILE = "centurion_eval_key.txt"
 
-CONDITIONS = ["現行", "B+D"]
+# B+D は現行と2件差(p=0.396)で決着しなかった。
+# 禁止が語ごとに効き方が違い、迂回先(星)が生まれていたため、
+# 迂回先を塞いだ B+D2 で再試行する。B+D は比較から外す —
+# 3条件にすると1条件あたりが減り、また検出できない規模になる
+CONDITIONS = ["現行", "B+D2"]
 RUNS = 8
 MAX_TOKENS = 150
 MIN_P = 0.05
 TOP_P = 1.0
-SHUFFLE_SEED = 20260812
+SHUFFLE_SEED = 20260813
 
 
 def load_model():
@@ -76,8 +82,11 @@ def main():
             for index in range(RUNS):
                 print(f"{condition} / {prompt} / {index + 1}")
                 text = generate(model, tokenizer, prefix)
+                # 禁止語の実数も記録する。指示が語彙レベルで通ったのか、
+                # 通ったうえで判定に転写されなかったのかを切り分けるため
+                banned = sum(text.count(word) for word in BANNED_WORDS)
                 samples.append((condition, prompt, text,
-                                rut_rate_vocab(text, vocabs[prompt])))
+                                rut_rate_vocab(text, vocabs[prompt]), banned))
         print(f"  {condition}: {time.time() - began:.0f}秒")
 
     random.Random(SHUFFLE_SEED).shuffle(samples)
@@ -95,13 +104,14 @@ def main():
         out.write("  出ているものを ○、沈んでいるものを △ にしてください。\n\n")
         key.write("盲検の答え(判定を終えるまで開かないこと)\n\n")
 
-        for index, (condition, prompt, text, rut) in enumerate(samples, 1):
+        for index, (condition, prompt, text, rut, banned) in enumerate(samples, 1):
             out.write("-" * 60 + "\n")
             out.write(f"標本{index:02d}\n")
             out.write(f"お題: {prompt}\n")
             out.write("判定: \n")
             out.write(text.strip() + "\n\n")
-            key.write(f"標本{index:02d}: {condition} / 旧轍語彙率 {rut:.2f}\n")
+            key.write(f"標本{index:02d}: {condition}"
+                      f" / 旧轍語彙率 {rut:.2f} / 禁止語 {banned}\n")
 
     print(f"\n完了: {OUTPUT_FILE} ({len(samples)}件) と {KEY_FILE}")
     print("判定を終えるまで答えのファイルは開かないこと")
