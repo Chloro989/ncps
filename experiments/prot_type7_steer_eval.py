@@ -26,15 +26,20 @@ VECTOR_FILE = Path("centurion_steer.pt")
 OUTPUT_FILE = "centurion_eval.txt"
 KEY_FILE = "centurion_eval_key.txt"
 
-RUNS = 3
+# 前回は4条件12件ずつで、介入20%の脱出率67%が制御なし42%を上回ったが
+# p=0.207 で有意にならなかった。12件では原理的に届かない。
+# 条件を2つに絞って1条件32件にする。差が本物なら p<0.05 に届く規模
+RUNS = 8
 MAX_TOKENS = 150
 PREFILL = "そうですね、"
 MIN_P = 0.05
 TOP_P = 1.0
-SHUFFLE_SEED = 20260810
+SHUFFLE_SEED = 20260811
 
-# 用量反応から選んだ2点。10%は尤度が無傷、20%は轍が59%減る
-STRENGTHS = [10.0, 20.0]
+# 介入10%は前回、制御なしより脱出率が低く崩壊も最多で、
+# 用量反応として説明がつかなかった。20%だけを残す
+STRENGTHS = [20.0]
+INCLUDE_TYPE5 = False   # 既に「読める」で12戦12勝しており、今回の問いには不要
 
 TYPE5_GATE = 3.5
 TYPE5_TOP_K = 2
@@ -101,8 +106,11 @@ def main():
     vector, layer, scale = data["vector"], data["layer"], data["scale"]
     print(f"方向ベクトル: 層{layer} / ノルム基準 {scale:.1f}")
 
-    conditions = ["制御なし"] + [f"介入{int(s)}%" for s in STRENGTHS] + ["type5固定"]
-    print(f"条件: {' / '.join(conditions)}")
+    conditions = ["制御なし"] + [f"介入{int(s)}%" for s in STRENGTHS]
+    if INCLUDE_TYPE5:
+        conditions.append("type5固定")
+    print(f"条件: {' / '.join(conditions)}"
+          f" / 各条件 {len(USER_PROMPTS) * RUNS}件")
 
     samples = []
     for name in conditions:
