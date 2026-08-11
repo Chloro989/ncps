@@ -193,6 +193,31 @@ real, missing, outside = check_citations(answer, manuscript)
 多くの査読プロンプトは「引用が実在するか確認せよ」とモデルに自己申告させるが、
 番号なら**機械が確かめられる**。
 
+### 実際に回す
+
+```bash
+python -m centurion.critique 原稿.txt --list              # 塊と反復の一覧
+python -m centurion.critique 原稿.txt --mode 発想 > 問い.txt
+python -m centurion.critique 原稿.txt --mode 接続 --dream
+python -m centurion.critique 原稿.txt --check 答え.txt --chunk 2
+```
+
+既定では**プロンプトを出すだけ**でモデルを呼ばない。手元にGPUが無くても
+使えるようにするためで、出したものを好きなチャットへ貼れば性能の高い
+モデルで読ませられる。`--run` を付けたときだけモデルを読み込む(Colab を想定)。
+
+`--check` は二種類の誤りを見つける。
+
+| | 見つかるもの |
+|---|---|
+| `--check 答え.txt` | 存在しない段落番号への指摘 |
+| `--check 答え.txt --chunk 2` | **渡していない段落への言及** |
+
+後者が要る理由: この検査を作った日に、実際に強いモデルへ解かせたところ、
+番号は実在するが読ませていない段落を2件引き、**どちらも中身を取り違えていた**。
+番号の実在だけを見る検査は、その2件を素通りさせた。
+番号が実在することと、モデルがその段落を読んでいたことは別である。
+
 ## 分かっている限界
 
 **目的の後半は達成していない。** 「文章を保つ」は抑圧で達成したが、
@@ -227,8 +252,9 @@ centurion/          製品
   manuscript.py     原稿を読んで章・段落・塊に分ける (モデル不要)
   review.py         論評と発想の問い、段落番号の検査 (モデル不要)
   connect.py        遠い二つを繋ぐ。反復の検出と対の選定 (モデル不要)
+  critique.py       原稿を読ませる実行系。既定はプロンプトを出すだけ
   __main__.py       コマンドライン
-tests/              モデルを読まずに確かめられる部分の試験 (157件)
+tests/              モデルを読まずに確かめられる部分の試験 (180件)
 experiments/        実験の記録。凍結してある
 results/            測定の生データと報告
 ```
@@ -238,6 +264,7 @@ python tests/test_centurion.py
 python tests/test_manuscript.py
 python tests/test_review.py
 python tests/test_connect.py
+python tests/test_critique.py
 ```
 
 ## 記録
