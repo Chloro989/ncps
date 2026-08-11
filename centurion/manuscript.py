@@ -54,7 +54,52 @@ SENTENCE_END = re.compile(r"[。！？!?]+[」』）\)】〉》”\"]*")
 
 
 def in_colab():
-    return "google.colab" in sys.modules or "COLAB_GPU" in __import__("os").environ
+    return ("google.colab" in sys.modules
+            or "COLAB_GPU" in __import__("os").environ)
+
+
+def in_notebook():
+    """ノートブックの中から直に呼ばれているか。
+
+    Colab のアップロードの窓は IPython の kernel を通して開く。
+    `!python main.py` で起動した子プロセスには kernel が無いので、
+    環境変数だけを見て Colab と判定すると窓を開こうとして落ちる"""
+    try:
+        import IPython
+    except ImportError:
+        return False
+    try:
+        return IPython.get_ipython() is not None
+    except Exception:
+        return False
+
+
+def no_window_message():
+    lines = ["原稿のパスを渡すこと。この環境では選択の窓を開けない。", ""]
+    if in_colab():
+        lines += [
+            "Colab では `!python` で起動した子プロセスに kernel が無いため、",
+            "アップロードの窓を出せない。セルの中で先に受け取ってから渡す。",
+            "",
+            "  from centurion.manuscript import upload",
+            "  upload()                     # 窓が出る。manuscripts/ に入る",
+            "",
+            "  !python main.py read 原稿.txt",
+            "",
+            "セルの中だけで済ませることもできる。",
+            "",
+            "  import main",
+            "  main.main(['read'])          # ここからなら窓が出る",
+        ]
+    else:
+        lines += [
+            "画面のある環境なら窓が開く。開かないときはパスを直に渡す。",
+            "",
+            "  python main.py read 原稿.txt",
+            "",
+            "manuscripts/ に置いた原稿はファイル名だけでよい。",
+        ]
+    return "\n".join(lines)
 
 
 def resolve_input(path):
@@ -95,7 +140,11 @@ def pick_file(title="原稿を選ぶ"):
 
 
 def upload(folder=None):
-    """Colab で手元のPCからファイルを受け取る。保存したパスの並びを返す"""
+    """Colab で手元のPCからファイルを受け取る。保存したパスの並びを返す。
+
+    セルの中から呼ぶこと。`!python` の子プロセスからは窓を開けない"""
+    if not in_notebook():
+        raise SystemExit(no_window_message())
     from google.colab import files            # Colab の中にしかない
 
     folder = Path(folder) if folder else MANUSCRIPTS
@@ -108,20 +157,48 @@ def upload(folder=None):
     return saved
 
 
+def stored():
+    """置き場にある原稿"""
+    if not MANUSCRIPTS.exists():
+        return []
+    return sorted(path for path in MANUSCRIPTS.iterdir()
+                  if path.is_file() and path.name != "README.md"
+                  and not path.name.startswith("."))
+
+
+def only_stored():
+    """置き場に一つだけあるならそれを使う。
+    Colab で `!python` から呼ばれたときの逃げ道 —
+    一度アップロードしてあれば、次からはパスを渡さずに済む"""
+    found = stored()
+    if len(found) == 1:
+        print(f"manuscripts/{found[0].name} を使う", file=sys.stderr)
+        return found[0]
+    if found:
+        raise SystemExit(
+            "置き場に原稿が複数ある。名前で指定すること:\n"
+            + "\n".join(f"  {path.name}" for path in found))
+    raise SystemExit(no_window_message())
+
+
 def obtain(path=None):
     """原稿を手に入れる。渡されていなければ環境に応じて取りに行く。
 
-    Colab ならアップロードの窓、手元のPCならファイル選択の窓を出す"""
+    Colab のセルからならアップロードの窓、
+    画面のあるPCならファイル選択の窓。
+    どちらも開けないときは、置き場を見てから、何をすべきかを伝えて止まる"""
     if path:
         return resolve_input(path)
     if in_colab():
+        if not in_notebook():
+            return only_stored()   # 子プロセス。窓は開けない
         saved = upload()
         if not saved:
             raise SystemExit("ファイルが選ばれなかった")
         return saved[0]
     chosen = pick_file()
     if chosen is None:
-        raise SystemExit("原稿のパスを渡すか、選択の窓で選ぶこと")
+        raise SystemExit(no_window_message())
     return chosen
 
 

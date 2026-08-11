@@ -14,23 +14,41 @@
 `read` `ask` `check` はモデルを使わないので、これだけで動く。
 `ask` が出したものを Claude なり ChatGPT なりに貼れば、性能の高いモデルで読ませられる。
 
-手元のPCから原稿をアップロードする。パスを省くとアップロードの窓が開く。
+**まずセルの中でアップロードする。** 窓は IPython の kernel を通して開くので、
+`!python` で起動した子プロセスからは開けない。
+
+```python
+import sys; sys.path.insert(0, '/content/ncps')
+from centurion.manuscript import upload
+
+upload()        # 窓が出る。選んだファイルは manuscripts/ に入る
+```
+
+置いたあとは、`!python` からファイル名で呼べる。
+
+```python
+!python main.py read 第五稿.txt
+!python main.py ask 第五稿.txt --mode 接続 --dream
+```
+
+原稿が一つだけなら名前も省ける。
 
 ```python
 !python main.py read
 ```
 
-窓で選んだファイルは `manuscripts/` に保存される。
-次からはファイル名だけで呼べる。
+セルの中だけで済ませることもできる。こちらは窓が開くので、
+アップロードから読ませるまで一息でできる。
 
 ```python
-!python main.py ask 第五稿.txt --mode 接続 --dream
+import main
+main.main(["read"])                 # アップロードの窓が出る
+main.main(["ask", "--mode", "接続"])
 ```
 
-Python から呼ぶときも同じ。
+`Manuscript` を直に使う場合も同じ。
 
 ```python
-import sys; sys.path.insert(0, '/content/ncps')
 from centurion.manuscript import Manuscript
 
 manuscript = Manuscript.load()      # アップロードの窓が出る

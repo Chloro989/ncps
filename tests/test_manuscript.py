@@ -17,8 +17,9 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
 import centurion.manuscript as manuscript_module
-from centurion.manuscript import (Manuscript, clean, in_colab, obtain,
-                                  resolve_input, split_sentences,
+from centurion.manuscript import (Manuscript, clean, in_colab, in_notebook,
+                                  no_window_message, obtain, only_stored,
+                                  resolve_input, split_sentences, stored,
                                   strip_aozora, width)
 
 FIXTURES = HERE / "fixtures"
@@ -161,8 +162,52 @@ with TemporaryDirectory() as folder:
         check("置き場に無いものはそのまま返す(誤りを伝えるため)",
               resolve_input("無い.txt") == Path("無い.txt"))
         check("パスを渡せばそのまま使う", obtain(str(NOVEL)) == NOVEL)
+        check("置き場の中身を数える", stored() == [box / "自作.txt"])
+        check("一つだけなら名前を省ける", only_stored() == box / "自作.txt")
+
+        (box / "README.md").write_text("説明", encoding="utf-8")
+        check("説明は原稿として数えない", stored() == [box / "自作.txt"])
+        (box / ".gitignore").write_text("*", encoding="utf-8")
+        check("隠しファイルも数えない", stored() == [box / "自作.txt"])
+
+        (box / "二つ目.txt").write_text("　雪。\n", encoding="utf-8")
+        try:
+            only_stored()
+            complained = ""
+        except SystemExit as stop:
+            complained = str(stop)
+        check("複数あれば名前を訊く",
+              "複数" in complained and "二つ目.txt" in complained,
+              complained)
+
+        for name in ("自作.txt", "二つ目.txt"):
+            (box / name).unlink()
+        try:
+            only_stored()
+            complained = ""
+        except SystemExit as stop:
+            complained = str(stop)
+        check("空なら何をすべきかを伝える",
+              "原稿のパスを渡すこと" in complained, complained)
     finally:
         manuscript_module.MANUSCRIPTS = original
+
+print("\n== 窓が開けない環境 ==")
+# Colab で `!python` から呼ぶと子プロセスに kernel が無く、
+# 環境変数だけを見て判定すると窓を開こうとして落ちる
+check("試験は子プロセスなので kernel が無い", in_notebook() is False)
+check("案内にパスの渡し方が入る",
+      "原稿のパスを渡すこと" in no_window_message())
+
+original_colab = manuscript_module.in_colab
+manuscript_module.in_colab = lambda: True
+try:
+    message = manuscript_module.no_window_message()
+    check("Colab なら kernel の話をする", "kernel" in message, message[:40])
+    check("Colab ならセルでの手順を示す", "upload()" in message)
+finally:
+    manuscript_module.in_colab = original_colab
+check("Colab でなければ画面の話をする", "画面" in no_window_message())
 
 print("\n== 端の場合 ==")
 empty = Manuscript("")
