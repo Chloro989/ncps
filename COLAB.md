@@ -7,32 +7,65 @@
 ```python
 !git clone https://github.com/Chloro989/ncps /content/ncps
 %cd /content/ncps
+```
+
+### 原稿を読ませる (モデル不要)
+
+`read` `ask` `check` はモデルを使わないので、これだけで動く。
+`ask` が出したものを Claude なり ChatGPT なりに貼れば、性能の高いモデルで読ませられる。
+
+手元のPCから原稿をアップロードする。パスを省くとアップロードの窓が開く。
+
+```python
+!python main.py read
+```
+
+窓で選んだファイルは `manuscripts/` に保存される。
+次からはファイル名だけで呼べる。
+
+```python
+!python main.py ask 第五稿.txt --mode 接続 --dream
+```
+
+Python から呼ぶときも同じ。
+
+```python
+import sys; sys.path.insert(0, '/content/ncps')
+from centurion.manuscript import Manuscript
+
+manuscript = Manuscript.load()      # アップロードの窓が出る
+print(manuscript.summary())
+```
+
+ランタイムが切れると `manuscripts/` も消える。何度も使う原稿は Drive に置く。
+
+```python
+from google.colab import drive
+drive.mount('/content/drive')
+!cp /content/drive/MyDrive/原稿/*.txt /content/ncps/manuscripts/
+```
+
+### 小説を書かせる (モデルが要る)
+
+```python
 !pip install -q transformers accelerate
 ```
 
 ```python
-import sys; sys.path.insert(0, '/content/ncps')
+!python main.py write 誰かが置いていった傘の話をして --verbose
+```
+
+Python から使うなら、モデルの読み込みに数分かかるので
+`Centurion()` は一度だけ作って使い回すこと。
+
+```python
 from centurion import Centurion
 
 centurion = Centurion()
-print(centurion.say("古い本を開いたときの手触りを書いて"))
-```
-
-会話にするとき。
-
-```python
 for reply in centurion.converse(["朝の匂いについて書いて",
                                  "沈黙について書いて"]):
     print(reply, "\n")
 ```
-
-コマンドラインからでも動く。
-
-```python
-!python -m centurion 誰かが置いていった傘の話をして --verbose
-```
-
-モデルの読み込みに数分かかる。`Centurion()` は一度だけ作って使い回すこと。
 
 以下は実験を回すときの手順。
 

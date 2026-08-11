@@ -120,7 +120,10 @@ def build_parser():
     parser = argparse.ArgumentParser(
         prog="centurion.critique",
         description="原稿を読ませて、論評か発想を得る")
-    parser.add_argument("path", help="原稿のファイル")
+    parser.add_argument("path", nargs="?",
+                        help="原稿のファイル。省くと、手元のPCなら選択の窓、"
+                             "Colab ならアップロードの窓が開く。"
+                             "manuscripts/ に置いたものはファイル名だけでよい")
     parser.add_argument("--mode", default="発想", choices=MODES)
     parser.add_argument("--size", type=int, default=CHUNK_SIZE,
                         help=f"1塊の上限文字数 (既定 {CHUNK_SIZE})")

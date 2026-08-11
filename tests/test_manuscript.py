@@ -11,14 +11,18 @@
 import sys
 import tempfile
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-from centurion.manuscript import (Manuscript, clean, split_sentences,
+import centurion.manuscript as manuscript_module
+from centurion.manuscript import (Manuscript, clean, in_colab, obtain,
+                                  resolve_input, split_sentences,
                                   strip_aozora, width)
 
 FIXTURES = HERE / "fixtures"
+NOVEL = FIXTURES / "sample_novel.txt"
 passed = failed = 0
 
 
@@ -136,6 +140,29 @@ with tempfile.TemporaryDirectory() as folder:
     check("Shift_JIS を読める", "雪が降った" in shifted.text)
     check("段落に分かれる", len(shifted.paragraphs) == 2,
           str(len(shifted.paragraphs)))
+
+print("\n== 原稿の受け取り ==")
+check("手元では Colab と判定しない", in_colab() is False)
+check("引用符つきのパスを開ける",
+      resolve_input(f'"{NOVEL}"') == NOVEL,
+      str(resolve_input(f'"{NOVEL}"')))
+check("前後の空白を落とす", resolve_input(f"  {NOVEL} ") == NOVEL)
+check("引用符つきでも読める",
+      Manuscript.load(f'"{NOVEL}"').title == "試験用の原稿")
+
+with TemporaryDirectory() as folder:
+    box = Path(folder)
+    (box / "自作.txt").write_text("　雨が降った。\n", encoding="utf-8")
+    original = manuscript_module.MANUSCRIPTS
+    manuscript_module.MANUSCRIPTS = box
+    try:
+        check("置き場にあるものはファイル名だけで開ける",
+              resolve_input("自作.txt") == box / "自作.txt")
+        check("置き場に無いものはそのまま返す(誤りを伝えるため)",
+              resolve_input("無い.txt") == Path("無い.txt"))
+        check("パスを渡せばそのまま使う", obtain(str(NOVEL)) == NOVEL)
+    finally:
+        manuscript_module.MANUSCRIPTS = original
 
 print("\n== 端の場合 ==")
 empty = Manuscript("")

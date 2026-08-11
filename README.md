@@ -1,10 +1,37 @@
 # センチュリオン
 
-文章を保ったまま、常套から少し外れた語りを返す生成AI。
-Qwen2.5-3B-Instruct の上に、盲検で確かめた2つの仕掛けを載せている。
+小説を書く人に伴走する道具と、文章を保ったまま常套から外れた語りを返す生成AI。
+
+## 入口
+
+基本の操作はすべて `main.py` から呼べる。
+
+```bash
+python main.py                          # 何ができるかを出す
+python main.py read                     # 原稿を読む(窓が開く)
+python main.py ask --mode 発想           # 問いを組む
+python main.py check 答え.txt --chunk 2  # 段落番号を検査する
+python main.py write 青色にまつわる話を聞かせて
+python main.py test                     # 試験を全部走らせる
+```
+
+| 命令 | すること | モデル |
+|---|---|---|
+| `read` | 章・段落・切り出し・反復の一覧を見る | 不要 |
+| `ask` | 原稿を読ませる問いを組む(`--mode 発想/査読/接続/連想`) | 既定では不要 |
+| `check` | 答えの段落番号が実在するかを検査する | 不要 |
+| `write` | 小説を書かせる | 必要 |
+| `test` | 試験を全部走らせる(212件) | 不要 |
+
+**原稿のパスは省ける。** 手元のPCならファイル選択の窓、Colab ならアップロードの
+窓が開く。`manuscripts/` に置いた原稿はファイル名だけで呼べて、
+**あの中身は git に入らない**(未発表の作品を公開リポジトリへ入れないため)。
+
+`ask` は既定でプロンプトを出すだけなので、それを好きなチャットへ貼れば
+性能の高いモデルで読ませられる。`--run` を付けたときだけモデルを読み込む。
 
 ```
-$ python -m centurion 古い本を開いたときの手触りを書いて
+$ python main.py write 古い本を開いたときの手触りを書いて
 そうですね、古い本を開いた時の手触りは独特で美しいものがありますよ。
 ほんのりと柔らかい紙の風合いが伝わり、手のひらによじれるような光沢。
 その歴史を感じさせる厚みと重さ、そして何よりも香ばしい、紙の香り。
@@ -21,26 +48,24 @@ $ python -m centurion 古い本を開いたときの手触りを書いて
 液体回路による姿勢の漂い。いずれも作って測って効かなかった。
 経緯は [results/REPORT.md](results/REPORT.md)。
 
-## 動かす
+## 書かせる
 
-GPUが要る。手元にGPUが無ければ Colab で([COLAB.md](COLAB.md))。
+`write` だけはモデルが要る。手元にGPUが無ければ Colab で([COLAB.md](COLAB.md))。
 
 ```bash
 pip install torch transformers accelerate
 ```
 
-### コマンドライン
-
 ```bash
-python -m centurion 青色にまつわる話を聞かせて
+python main.py write 青色にまつわる話を聞かせて
 ```
 
 ```bash
-python -m centurion --chat
+python main.py write --chat
 ```
 
 ```bash
-python -m centurion 朝の匂いについて書いて 沈黙について書いて --turns
+python main.py write 朝の匂いについて書いて 沈黙について書いて --turns
 ```
 
 `--turns` を付けると前のやり取りを踏まえた一続きの会話になる。
@@ -80,7 +105,7 @@ centurion.forget()      # 記憶を捨てる
 GPUが無くても動く。
 
 ```bash
-python -m centurion.manuscript 原稿.txt --size 6000
+python main.py read 原稿.txt --size 6000
 ```
 
 ```
@@ -196,22 +221,22 @@ real, missing, outside = check_citations(answer, manuscript)
 ### 実際に回す
 
 ```bash
-python -m centurion.critique 原稿.txt --list              # 塊と反復の一覧
-python -m centurion.critique 原稿.txt --mode 発想 > 問い.txt
-python -m centurion.critique 原稿.txt --mode 接続 --dream
-python -m centurion.critique 原稿.txt --check 答え.txt --chunk 2
+python main.py read 原稿.txt                       # 塊と反復の一覧
+python main.py ask 原稿.txt --mode 発想 > 問い.txt
+python main.py ask 原稿.txt --mode 接続 --dream
+python main.py check 答え.txt 原稿.txt --chunk 2
 ```
 
 既定では**プロンプトを出すだけ**でモデルを呼ばない。手元にGPUが無くても
 使えるようにするためで、出したものを好きなチャットへ貼れば性能の高い
 モデルで読ませられる。`--run` を付けたときだけモデルを読み込む(Colab を想定)。
 
-`--check` は二種類の誤りを見つける。
+`check` は二種類の誤りを見つける。
 
 | | 見つかるもの |
 |---|---|
-| `--check 答え.txt` | 存在しない段落番号への指摘 |
-| `--check 答え.txt --chunk 2` | **渡していない段落への言及** |
+| `check 答え.txt 原稿.txt` | 存在しない段落番号への指摘 |
+| `check 答え.txt 原稿.txt --chunk 2` | **渡していない段落への言及** |
 
 後者が要る理由: この検査を作った日に、実際に強いモデルへ解かせたところ、
 番号は実在するが読ませていない段落を2件引き、**どちらも中身を取り違えていた**。
@@ -246,6 +271,8 @@ python -m centurion.critique 原稿.txt --check 答え.txt --chunk 2
 ## 中身
 
 ```
+main.py             入口。基本の操作はすべてここから
+manuscripts/        自分の原稿の置き場。中身は git に入らない
 centurion/          製品
   prompts.py        人格と、生成ごとに組み替える句
   generate.py       抑圧と生成の本体
@@ -253,18 +280,14 @@ centurion/          製品
   review.py         論評と発想の問い、段落番号の検査 (モデル不要)
   connect.py        遠い二つを繋ぐ。反復の検出と対の選定 (モデル不要)
   critique.py       原稿を読ませる実行系。既定はプロンプトを出すだけ
-  __main__.py       コマンドライン
-tests/              モデルを読まずに確かめられる部分の試験 (180件)
+  __main__.py       write のコマンドライン
+tests/              モデルを読まずに確かめられる部分の試験 (212件)
 experiments/        実験の記録。凍結してある
 results/            測定の生データと報告
 ```
 
 ```bash
-python tests/test_centurion.py
-python tests/test_manuscript.py
-python tests/test_review.py
-python tests/test_connect.py
-python tests/test_critique.py
+python main.py test
 ```
 
 ## 記録

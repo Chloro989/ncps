@@ -10,12 +10,17 @@ torch も transformers も読み込まない。手元のCPUだけで全部確か
 """
 
 import re
+import sys
 import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 
 # 日本語の原稿でよくある文字コード。上から順に試す
 ENCODINGS = ["utf-8-sig", "utf-8", "cp932", "euc-jp"]
+
+# 自分の原稿の置き場。ここは git が無視する。
+# 未発表の原稿を扱うので、うっかり公開リポジトリへ入らない場所を用意する
+MANUSCRIPTS = Path(__file__).resolve().parent.parent / "manuscripts"
 
 # 章の見出しらしい行。短い行にしか当てない —
 # 本文中の「第一章を書き終えた日のことだ」を見出しと誤認しないため
@@ -46,6 +51,78 @@ AOZORA_FOOTER = re.compile(r"^(?:底本[：:]|入力[：:]|校正[：:]|"
 
 # 文の終わり。閉じ括弧が続くならそこまでを一文にする
 SENTENCE_END = re.compile(r"[。！？!?]+[」』）\)】〉》”\"]*")
+
+
+def in_colab():
+    return "google.colab" in sys.modules or "COLAB_GPU" in __import__("os").environ
+
+
+def resolve_input(path):
+    """渡された文字列を、実際に開けるパスに直す。
+
+    Windows の「パスのコピー」は引用符付きで貼られる。
+    ファイル名だけを渡されたときは manuscripts/ の中も探す —
+    長いパスを打たずに済むように"""
+    text = str(path).strip().strip('"').strip("'")
+    candidate = Path(text).expanduser()
+    if candidate.exists():
+        return candidate
+    inside = MANUSCRIPTS / candidate.name
+    if inside.exists():
+        return inside
+    return candidate
+
+
+def pick_file(title="原稿を選ぶ"):
+    """ファイル選択の窓を開く。画面の無い環境では None を返す"""
+    try:
+        import tkinter
+        from tkinter import filedialog
+    except ImportError:
+        return None
+    try:
+        root = tkinter.Tk()
+    except Exception:
+        return None            # 画面が無い(Colab や SSH の先)
+    root.withdraw()
+    chosen = filedialog.askopenfilename(
+        title=title,
+        initialdir=str(MANUSCRIPTS if MANUSCRIPTS.exists() else Path.home()),
+        filetypes=[("テキスト", "*.txt"), ("マークダウン", "*.md"),
+                   ("すべて", "*.*")])
+    root.destroy()
+    return Path(chosen) if chosen else None
+
+
+def upload(folder=None):
+    """Colab で手元のPCからファイルを受け取る。保存したパスの並びを返す"""
+    from google.colab import files            # Colab の中にしかない
+
+    folder = Path(folder) if folder else MANUSCRIPTS
+    folder.mkdir(parents=True, exist_ok=True)
+    saved = []
+    for name, content in files.upload().items():
+        path = folder / name
+        path.write_bytes(content)
+        saved.append(path)
+    return saved
+
+
+def obtain(path=None):
+    """原稿を手に入れる。渡されていなければ環境に応じて取りに行く。
+
+    Colab ならアップロードの窓、手元のPCならファイル選択の窓を出す"""
+    if path:
+        return resolve_input(path)
+    if in_colab():
+        saved = upload()
+        if not saved:
+            raise SystemExit("ファイルが選ばれなかった")
+        return saved[0]
+    chosen = pick_file()
+    if chosen is None:
+        raise SystemExit("原稿のパスを渡すか、選択の窓で選ぶこと")
+    return chosen
 
 
 def read_text(path, strip_ruby=True):
@@ -221,8 +298,9 @@ class Manuscript:
         self._split()
 
     @classmethod
-    def load(cls, path, strip_ruby=True):
-        path = Path(path)
+    def load(cls, path=None, strip_ruby=True):
+        """パスを省くと、環境に応じて選択やアップロードの窓を出す"""
+        path = obtain(path)
         return cls(read_text(path, strip_ruby), title=path.stem)
 
     def _paragraph_lines(self):
@@ -366,7 +444,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="centurion.manuscript",
         description="原稿を読んで、章・段落・切り出しの様子を見る")
-    parser.add_argument("path", help="原稿のファイル")
+    parser.add_argument("path", nargs="?",
+                        help="原稿のファイル。省くと選択の窓が開く")
     parser.add_argument("--size", type=int, default=6000,
                         help="1塊の上限文字数 (既定 6000)")
     parser.add_argument("--overlap", type=int, default=1,
