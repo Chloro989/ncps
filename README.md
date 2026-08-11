@@ -74,6 +74,46 @@ for reply in centurion.converse(["朝の匂いについて書いて",
 centurion.forget()      # 記憶を捨てる
 ```
 
+## 原稿を読む
+
+小説の校正・アイデア出しに向けた土台。モデルを使わないので、
+GPUが無くても動く。
+
+```bash
+python -m centurion.manuscript 原稿.txt --size 6000
+```
+
+```
+「冒頭プロトタイプ 第五稿」
+  4533文字 / 見た目 8835 / 1章 / 103段落 / 218文
+    0. (見出しなし)                      4311文字  103段落
+
+3000文字ずつに切ると 2塊
+  塊0: 0章 段落0〜70 (2977文字)
+  塊1: 0章 段落71〜102 (1587文字、うち重なり1段落)
+```
+
+- 文字コードは utf-8 / Shift_JIS / EUC-JP を自動で判別
+- 章の見出し(`# 見出し`、`第一章`、`＊` のような区切り)を拾う
+- 青空文庫形式は凡例・底本の記録・ルビ・傍点の指定を落とし、題と著者を拾う
+- 空行で区切る書き方と、1行1段落の書き方の両方に対応
+- 会話文をまたがずに文へ分ける(「行こう。」と言った。→ 2文)
+
+```python
+from centurion.manuscript import Manuscript
+
+manuscript = Manuscript.load("原稿.txt")
+for chunk in manuscript.chunks(size=6000, overlap=1):
+    print(chunk)                    # 塊3: 2章 段落58〜79 (5940文字)
+    chunk.text                      # 重なりを含む、モデルに渡す本文
+    chunk.body                      # 重なりを除いた、この塊が担当する部分
+```
+
+**塊は必ず位置を持ち歩く。** 校正では指摘が原稿のどこを指すかが本体なので、
+章・段落の通し番号・原稿全体での文字位置を落とさない。
+`manuscript.text[p.start:p.end] == p.text` が全段落で成り立つことを
+試験で確かめている(ルビを落とす設定のときは、位置は落とした後の本文に対応)。
+
 ## 分かっている限界
 
 **目的の後半は達成していない。** 「文章を保つ」は抑圧で達成したが、
@@ -105,6 +145,7 @@ centurion.forget()      # 記憶を捨てる
 centurion/          製品
   prompts.py        人格と、生成ごとに組み替える句
   generate.py       抑圧と生成の本体
+  manuscript.py     原稿を読んで章・段落・塊に分ける (モデル不要)
   __main__.py       コマンドライン
 tests/              モデルを読まずに確かめられる部分の試験
 experiments/        実験の記録。凍結してある
@@ -113,6 +154,7 @@ results/            測定の生データと報告
 
 ```bash
 python tests/test_centurion.py
+python tests/test_manuscript.py
 ```
 
 ## 記録
