@@ -154,6 +154,12 @@ RUT_WORDS = [
 STANCE_COUNT = 2
 BAN_COUNT = 3
 
+# Phase 9 の一騎打ちで 20勝12敗(p=0.108)。有意には届いていないが、
+# 現行が両勝ちしたお題が1つもなく、引き分けも0だったことを踏まえ、
+# これを既定として採用する。確定的な差ではない点は忘れないこと。
+# 戻すときは build_prefix(tokenizer, "現行", ...) を使う
+DEFAULT_IS_FLUID = True
+
 
 def build_fluid(rng, stance_count=STANCE_COUNT, ban_count=BAN_COUNT):
     """生成ごとに姿勢と禁止語を選び直したシステムプロンプトを組む。
