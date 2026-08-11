@@ -20,6 +20,8 @@ Phase 0 の教訓 — 入力に反応しない回路でも、動いているよ�
 prot_type10_duel.py は find_seed() を呼ぶだけで、種を指定しない。
 """
 import random
+from collections import Counter
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -42,27 +44,34 @@ DRIFT_MIN, DRIFT_MAX = 0.70, 1.60
 VARIETY_MIN = 8
 FROZEN_MAX = 2
 RELAX_MIN = 2
+# 最頻句が選択の何割に入っているか。第1回はこれを見ておらず、
+# 「断定を恐れず」が92%に入った状態を組み合わせ8種として合格させた。
+# 種類の数は、同じ句を軸にした8通りとバラバラな8通りを区別できない。
+# ランダム選択なら1句あたり2/9=22%なので、5割を上限にする
+SHARE_MAX = 0.50
 STEP_HOLD = 3              # 段の前に一定入力を保つターン数
 STEP_AFTER = 8             # 段のあと一定入力で追うターン数
 
-# 実際の応答の代わり。本番の入力統計はColabを回すまで分からないので、
-# 150トークンの日本語に寄せた文の池から重複ありで引いて組み立てる。
-# 短文を重複なしで並べた最初の代用品では語彙の豊かさが 1.00±0.00 になり、
-# 4つある特徴のうち1つが死んだ状態で回路を選ぶことになっていた
-RESPONSE_PIECES = [
-    "駅の裏の坂を下ると、川口さんの傘屋がまだ開いていた。",
-    "鉄のにおいがして、指の先が少し冷たくなった。",
-    "宇宙のような静寂が、そこにだけ残っていた。",
-    "祖母が七時のバスを待っていたころの話だ。",
-    "白いタイルの目地に、去年の雨が溜まっている。",
-    "誰かがそう言っていた、というだけの話でもある。",
-    "永遠と呼びたくなるものが、その角にあった。",
-    "紙の縁が指に引っかかって、乾いた音を立てた。",
-    "台所の窓から、隣の家の物干しが見えていた。",
-    "その匂いを何と呼べばいいのか、まだ分からない。",
-    "深淵をのぞくような気持ちにはならなかった。",
-    "傘の骨が一本折れていて、そこだけ光を通した。",
-]
+# 第1回の実測応答。想像で作った文の池は本番と分布が違い
+# (轍語率 -0.75σ / 豊かさ +1.09σ)、別の作動点で回路を測っていた。
+# 実物を読んで、そこから引く
+RESPONSE_FILE = (Path(__file__).resolve().parent.parent / "results"
+                 / "centurion_turn_responses.txt")
+
+
+def load_responses():
+    """実測応答を「ターン番号 → 本文の並び」で読む。
+    ターンごとに引くのは、長さや轍語率がターンによって偏るため"""
+    by_turn = {}
+    for line in RESPONSE_FILE.read_text(encoding="utf-8").splitlines():
+        if line.startswith("#") or "\t" not in line:
+            continue
+        number, body = line.split("\t", 1)
+        by_turn.setdefault(int(number), []).append(body)
+    return by_turn
+
+
+RESPONSES = load_responses()
 
 
 def wide_features(rng, turn):
@@ -75,11 +84,8 @@ def wide_features(rng, turn):
 
 
 def response_like_features(rng, turn):
-    """実際の応答に寄せた入力。種を選ぶのに使う"""
-    text = "そうですね、"
-    while len(text) < rng.randint(150, 250):
-        text += rng.choice(RESPONSE_PIECES)
-    return response_features(text, turn, TURNS)
+    """第1回の実測応答から引いた入力。種を選ぶのに使う"""
+    return response_features(rng.choice(RESPONSES[turn]), turn, TURNS)
 
 
 def constant_features(level):
@@ -121,13 +127,17 @@ def walk(circuit, seed, sampler, shared=0):
 
 
 def measure(picks):
-    """漂い(隣のターンで共有する句)、組み合わせの種類、凍結した会話の数"""
+    """漂い(隣のターンで共有する句)、組み合わせの種類、凍結した会話の数、
+    最頻句が選択の何割に入っているか"""
     steps = len(picks[0])
     drift = float(np.mean([len(set(c[i]) & set(c[i - 1]))
                            for c in picks for i in range(1, steps)]))
     variety = len({p for c in picks for p in c})
     frozen = sum(1 for c in picks if len(set(c)) == 1)
-    return drift, variety, frozen
+    counts = Counter(clause for c in picks for pair in c for clause in pair)
+    total = sum(len(c) for c in picks)
+    share = counts.most_common(1)[0][1] / total if total else 1.0
+    return drift, variety, frozen, share
 
 
 def build(seed):
@@ -140,14 +150,15 @@ def build(seed):
 def check(seed):
     """本番と同じ形(会話16本、1ターン目共通、回路の呼び出し3回)で測る"""
     circuit = build(seed)
-    drift, variety, frozen = measure(
+    drift, variety, frozen, share = measure(
         walk(circuit, 4242, response_like_features, shared=SHARED_TURNS))
-    return drift, variety, frozen, relaxation(circuit)
+    return drift, variety, frozen, share, relaxation(circuit)
 
 
-def passes(drift, variety, frozen, relax):
+def passes(drift, variety, frozen, share, relax):
     return (DRIFT_MIN <= drift <= DRIFT_MAX and variety >= VARIETY_MIN
-            and frozen <= FROZEN_MAX and relax >= RELAX_MIN)
+            and frozen <= FROZEN_MAX and share <= SHARE_MAX
+            and relax >= RELAX_MIN)
 
 
 def find_seed(limit=SEARCH_LIMIT):
@@ -178,7 +189,7 @@ def structure():
     for seed in range(SEEDS):
         circuit = build(seed)
         picks = walk(circuit, 100 + seed, wide_features)
-        drift, variety, _ = measure(picks)
+        drift, variety, _, _ = measure(picks)
         other = walk(circuit, 900 + seed, wide_features)
         differs = sum(1 for a, b in zip(picks, other)
                       for x, y in zip(a, b) if x != y)
@@ -195,17 +206,20 @@ def structure():
 def main():
     ok, baseline = structure()
 
-    print(f"\n== 応答に寄せた分布で種を選ぶ (条件: 漂い{DRIFT_MIN}〜{DRIFT_MAX} / "
-          f"種類{VARIETY_MIN}以上 / 凍結{FROZEN_MAX}本まで / 緩和{RELAX_MIN}以上) ==")
-    print(f"{'種':>4} {'漂い':>7} {'種類':>6} {'凍結':>6} {'緩和':>6} {'合否':>5}")
+    print(f"\n== 実測応答で種を選ぶ (条件: 漂い{DRIFT_MIN}〜{DRIFT_MAX} / "
+          f"種類{VARIETY_MIN}以上 / 凍結{FROZEN_MAX}本まで / "
+          f"最頻句{SHARE_MAX:.0%}まで / 緩和{RELAX_MIN}以上) ==")
+    print(f"{'種':>4} {'漂い':>7} {'種類':>6} {'凍結':>6} {'最頻句':>7} "
+          f"{'緩和':>6} {'合否':>5}")
     chosen = None
     for seed in range(SEARCH_LIMIT):
-        drift, variety, frozen, relax = check(seed)
-        good = passes(drift, variety, frozen, relax)
+        result = check(seed)
+        drift, variety, frozen, share, relax = result
+        good = passes(*result)
         if good and chosen is None:
             chosen = seed
-        print(f"{seed:>4} {drift:>7.2f} {variety:>6} {frozen:>6} {relax:>6} "
-              f"{'○' if good else '×':>4}"
+        print(f"{seed:>4} {drift:>7.2f} {variety:>6} {frozen:>6} "
+              f"{share:>6.0%} {relax:>6} {'○' if good else '×':>4}"
               f"{'  ← これを使う' if seed == chosen else ''}")
 
     if not ok:
@@ -213,10 +227,11 @@ def main():
     elif chosen is None:
         print(f"\n× {SEARCH_LIMIT}種のどれも条件を通らなかった")
     else:
-        drift, variety, frozen, relax = check(chosen)
+        drift, variety, frozen, share, relax = check(chosen)
         print(f"\n○ 種{chosen} を使う。ランダム{baseline:.2f} < "
               f"漂い{drift:.2f} < 固定{STANCE_COUNT}.00、"
-              f"種類{variety}、凍結{frozen}本、緩和{relax}ターン")
+              f"種類{variety}、凍結{frozen}本、最頻句{share:.0%}、"
+              f"緩和{relax}ターン")
 
 
 if __name__ == "__main__":

@@ -45,9 +45,9 @@ MAX_TOKENS = 150
 MIN_P = 0.05
 TOP_P = 1.0
 
-PROMPT_SEED = 777          # 禁止語とランダム流動の姿勢
-SHUFFLE_SEED = 20260812    # 左右の入れ替え
-GENERATION_SEED = 8000
+PROMPT_SEED = 778          # 禁止語とランダム流動の姿勢
+SHUFFLE_SEED = 20260813    # 左右の入れ替え
+GENERATION_SEED = 8100
 
 CONDITIONS = ["回路", "ランダム"]
 
@@ -80,9 +80,10 @@ def build_circuit():
     torch.manual_seed(seed)
     circuit = StanceCircuit(len(STANCE_CLAUSES))
     circuit.settle()
-    drift, variety, frozen, relax = check(seed)
+    drift, variety, frozen, share, relax = check(seed)
     print(f"回路 種{seed} (受け入れ試験が選んだ) / 漂い{drift:.2f} / "
-          f"種類{variety} / 凍結{frozen}本 / 緩和{relax}ターン")
+          f"種類{variety} / 凍結{frozen}本 / 最頻句{share:.0%} / "
+          f"緩和{relax}ターン")
     return circuit
 
 
