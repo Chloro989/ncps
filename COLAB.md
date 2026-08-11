@@ -1,5 +1,43 @@
 # Colab の使い方
 
+## センチュリオンを動かすだけなら
+
+実験ではなく製品を使うだけなら、これで足りる。Drive も要らない。
+
+```python
+!git clone https://github.com/Chloro989/ncps /content/ncps
+%cd /content/ncps
+!pip install -q transformers accelerate
+```
+
+```python
+import sys; sys.path.insert(0, '/content/ncps')
+from centurion import Centurion
+
+centurion = Centurion()
+print(centurion.say("古い本を開いたときの手触りを書いて"))
+```
+
+会話にするとき。
+
+```python
+for reply in centurion.converse(["朝の匂いについて書いて",
+                                 "沈黙について書いて"]):
+    print(reply, "\n")
+```
+
+コマンドラインからでも動く。
+
+```python
+!python -m centurion 誰かが置いていった傘の話をして --verbose
+```
+
+モデルの読み込みに数分かかる。`Centurion()` は一度だけ作って使い回すこと。
+
+以下は実験を回すときの手順。
+
+## 実験のとき
+
 ランタイムが切れるとファイルは消える。消えて困るものは2種類あり、置き場所を分ける。
 
 - **コード** — GitHub に置く。毎回クローンし直せばよい
