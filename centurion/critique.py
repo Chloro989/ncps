@@ -5,59 +5,123 @@
     python -m centurion.critique 原稿.txt --mode 査読
     python -m centurion.critique 原稿.txt --mode 接続
     python -m centurion.critique 原稿.txt --mode 連想
-    python -m centurion.critique 原稿.txt --run               # その場でモデルに解かせる
+    python -m centurion.critique 原稿.txt --api               # その場で論評させる
+    python -m centurion.critique 原稿.txt --api --all         # 全部の塊を順に
+    python -m centurion.critique 原稿.txt --run               # 手元のモデルで
     python -m centurion.critique 原稿.txt --check 答え.txt    # 段落番号を検査する
 
 既定では**プロンプトを出すだけ**で、モデルは呼ばない。
 手元にGPUが無くても使えるようにするためで、出したものを好きなチャットへ
 貼れば、性能の高いモデルで読ませられる。
---run を付けたときだけモデルを読み込む(Colab を想定)。
+
+--api か --run を付けると、その場で解かせて段落番号の検査まで通す。
+  --api  Claude の API。鍵は環境変数 ANTHROPIC_API_KEY から読む。
+         文芸の論評に耐える質が要るならこちら
+  --run  手元(か Colab)のモデル。無料だが、3B級では論評の質が出ない
 
 段落番号の検査だけは、答えを受け取ってから別に走らせられる。
 「実在しない箇所への指摘」は、モデルが強くなっても消えないため。
 """
 
 import argparse
+import json
+import os
 import random
 import sys
+import urllib.error
+import urllib.request
 
 from .connect import (DREAM_WORK, MIN_CHARS, build_chain_prompt,
                       build_connection_prompt, distant_pairs, recurrences)
 from .manuscript import Manuscript
 from .review import build_prompt, check_citations, choose_lenses, resolve
 
-MODEL_NAME = "Qwen/Qwen2.5-3B-Instruct"
-MAX_TOKENS = 1200          # 論評は長い。生成の150では話にならない
+LOCAL_MODEL = "Qwen/Qwen2.5-3B-Instruct"
+API_MODEL = "claude-sonnet-5"
+API_URL = "https://api.anthropic.com/v1/messages"
+API_VERSION = "2023-06-01"
+MAX_TOKENS = 4000          # 論評は長い。小説生成の150では話にならない
 CHUNK_SIZE = 6000
 MODES = ["発想", "査読", "接続", "連想"]
 
 
-def ask(model_name, head, body, max_tokens=MAX_TOKENS):
-    """モデルに一度だけ解かせる。ここでは抑圧を入れない —
-    type5 の抑圧は小説の読みやすさで検証したもので、
+class Local:
+    """手元(か Colab)のモデルに解かせる。一度読み込んで使い回す。
+
+    抑圧(type5設定)は入れない — あれは小説の読みやすさで検証したもので、
     分析の文章に効くかは確かめていない"""
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_name,
-        dtype=torch.float16 if device == "cuda" else torch.float32,
-    ).to(device).eval()
+    def __init__(self, model_name=LOCAL_MODEL):
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    prefix = tokenizer.apply_chat_template(
-        [{"role": "system", "content": head},
-         {"role": "user", "content": body}],
-        tokenize=False, add_generation_prompt=True)
-    inputs = tokenizer(prefix, return_tensors="pt").to(device)
-    with torch.no_grad():
-        output = model.generate(**inputs, max_new_tokens=max_tokens,
-                                do_sample=True, temperature=0.7,
-                                min_p=0.05, top_p=1.0,
-                                pad_token_id=tokenizer.eos_token_id)
-    return tokenizer.decode(output[0][inputs.input_ids.shape[1]:],
-                            skip_special_tokens=True)
+        self.torch = torch
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            dtype=torch.float16 if self.device == "cuda" else torch.float32,
+        ).to(self.device).eval()
+
+    def __call__(self, head, body, max_tokens=MAX_TOKENS):
+        prefix = self.tokenizer.apply_chat_template(
+            [{"role": "system", "content": head},
+             {"role": "user", "content": body}],
+            tokenize=False, add_generation_prompt=True)
+        inputs = self.tokenizer(prefix, return_tensors="pt").to(self.device)
+        with self.torch.no_grad():
+            output = self.model.generate(
+                **inputs, max_new_tokens=max_tokens, do_sample=True,
+                temperature=0.7, min_p=0.05, top_p=1.0,
+                pad_token_id=self.tokenizer.eos_token_id)
+        return self.tokenizer.decode(
+            output[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
+
+
+class Api:
+    """Claude の API に解かせる。
+
+    鍵は環境変数 ANTHROPIC_API_KEY から読むだけで、ここには書かない。
+    設定するのは使う人の仕事で、この道具は値を見ない。
+
+    余計な依存を増やさないよう、標準ライブラリだけで叩く。
+    Colab で pip install せずに使えるほうが手間が少ない"""
+
+    def __init__(self, model=API_MODEL):
+        self.model = model
+        self.key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        if not self.key:
+            raise SystemExit(
+                "ANTHROPIC_API_KEY が設定されていない。\n"
+                "  Windows: setx ANTHROPIC_API_KEY \"自分の鍵\" "
+                "(設定後に端末を開き直す)\n"
+                "  Colab:   import os; "
+                "os.environ['ANTHROPIC_API_KEY'] = '自分の鍵'\n"
+                "鍵は https://console.anthropic.com で作る。"
+                "この道具は鍵を保存も表示もしない。")
+
+    def __call__(self, head, body, max_tokens=MAX_TOKENS):
+        payload = json.dumps({
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "system": head,
+            "messages": [{"role": "user", "content": body}],
+        }).encode("utf-8")
+        request = urllib.request.Request(API_URL, data=payload, headers={
+            "x-api-key": self.key,
+            "anthropic-version": API_VERSION,
+            "content-type": "application/json",
+        })
+        try:
+            with urllib.request.urlopen(request, timeout=600) as response:
+                answer = json.load(response)
+        except urllib.error.HTTPError as problem:
+            detail = problem.read().decode("utf-8", "replace")[:400]
+            raise SystemExit(f"APIが断った ({problem.code}): {detail}")
+        except urllib.error.URLError as problem:
+            raise SystemExit(f"APIに届かない: {problem.reason}")
+        return "".join(part.get("text", "") for part in answer["content"]
+                       if part.get("type") == "text")
 
 
 def pick_chunk(manuscript, size, number):
@@ -71,20 +135,27 @@ def pick_chunk(manuscript, size, number):
     return chunks, chunks[number - 1]
 
 
-def compose(manuscript, args):
-    """モードに応じて (指示, 本文, 添える説明) を作る"""
-    rng = random.Random(args.seed)
+def compose(manuscript, args, chunk=None, nudge=0):
+    """モードに応じて (指示, 本文, 見せた段落, 添える説明) を作る。
+
+    nudge は塊ごとに観点を変えるためのずらし。
+    全部の塊に同じ観点を当てると、同じ角度の指摘が並ぶだけになる。
+    一度に渡す観点を減らして塊ごとに入れ替えるのが Phase 9 の処方"""
+    rng = random.Random(None if args.seed is None else args.seed + nudge)
 
     if args.mode in ("発想", "査読"):
-        chunks, chunk = pick_chunk(manuscript, args.size, args.chunk)
+        chunks, picked = pick_chunk(manuscript, args.size, args.chunk)
+        chunk = chunk or picked
         lenses = choose_lenses(rng, count=args.lenses)
         place = (f"{len(chunks)}つに分けたうちの"
                  f"{chunks.index(chunk) + 1}つ目、{chunk}")
         head, body = build_prompt(
             chunk, lenses, mode=args.mode, title=manuscript.title,
             author=manuscript.author, note=args.note, place=place)
-        allowed = {p.index for p in chunk.paragraphs[chunk.carried:]}
-        return head, body, allowed, f"観点: {'／'.join(l.key for l in lenses)}"
+        allowed = {p.index for p in chunk.paragraphs}
+        return (head, body, allowed,
+                f"{chunks.index(chunk) + 1}/{len(chunks)}塊 "
+                f"観点: {'／'.join(l.key for l in lenses)}")
 
     if args.mode == "接続":
         # 反復があればそれを優先する。作者がすでに植えた種のほうが確度が高い
@@ -146,8 +217,15 @@ def build_parser():
     parser.add_argument("--list", action="store_true",
                         help="塊と反復の一覧だけを出す")
     parser.add_argument("--run", action="store_true",
-                        help="その場でモデルに解かせる。GPUが要る")
-    parser.add_argument("--model", default=MODEL_NAME)
+                        help="その場で手元のモデルに解かせる。GPUが要る")
+    parser.add_argument("--api", action="store_true",
+                        help="その場で Claude の API に解かせる。"
+                             "鍵は環境変数 ANTHROPIC_API_KEY から読む")
+    parser.add_argument("--all", action="store_true",
+                        help="全部の塊を順に読ませる (発想・査読のみ)")
+    parser.add_argument("--model",
+                        help=f"使うモデル (手元は {LOCAL_MODEL}、"
+                             f"APIは {API_MODEL})")
     parser.add_argument("--tokens", type=int, default=MAX_TOKENS)
     parser.add_argument("--check", metavar="答え",
                         help="答えのファイルを読み、段落番号を検査する")
@@ -221,6 +299,32 @@ def run_check(manuscript, args):
     return 1 if missing or outside else 0
 
 
+def tasks(manuscript, args):
+    """読ませる仕事の並びを作る。--all なら塊の数だけ並ぶ"""
+    if not args.all:
+        return [compose(manuscript, args)]
+    if args.mode not in ("発想", "査読"):
+        raise SystemExit("--all は発想と査読でだけ使える")
+    chunks, _ = pick_chunk(manuscript, args.size, None)
+    return [compose(manuscript, args, chunk=chunk, nudge=index)
+            for index, chunk in enumerate(chunks)]
+
+
+def report(answer, manuscript, allowed):
+    """答えの段落番号を検査して、気になるものだけ伝える"""
+    real, missing, outside = check_citations(answer, manuscript,
+                                             allowed=allowed)
+    parts = [f"実在{len(real)}件"]
+    if missing:
+        parts.append(f"存在しない{len(missing)}件 {sorted(set(missing))}"
+                     " ← この指摘は捨てること")
+    if outside:
+        parts.append(f"見せていない範囲{len(outside)}件 {sorted(set(outside))}"
+                     " ← 中身を確かめずに書いている")
+    print("# 段落番号 " + " / ".join(parts), file=sys.stderr)
+    return bool(missing or outside)
+
+
 def main(argv=None):
     args = build_parser().parse_args(argv)
     manuscript = Manuscript.load(args.path)
@@ -231,32 +335,40 @@ def main(argv=None):
         show_list(manuscript, args)
         return 0
 
-    head, body, allowed, label = compose(manuscript, args)
-    print(f"# {args.mode}モード / {label}", file=sys.stderr)
+    jobs = tasks(manuscript, args)
 
-    if not args.run:
+    if not args.run and not args.api:
         # 貼りやすい形で出す。指示と本文の境目を残す
-        print(head)
-        print()
-        print("---")
-        print()
-        print(body)
-        print(f"\n# 答えを得たら --check で段落番号を検査すること",
+        for index, (head, body, _, label) in enumerate(jobs):
+            print(f"# {args.mode}モード / {label}", file=sys.stderr)
+            if index:
+                print("\n" + "=" * 64 + "\n")
+            print(head)
+            print()
+            print("---")
+            print()
+            print(body)
+        print("\n# 答えを得たら check で段落番号を検査すること",
               file=sys.stderr)
         return 0
 
-    print(f"# {args.model} を読み込んでいます…", file=sys.stderr)
-    answer = ask(args.model, head, body, args.tokens)
-    print(answer)
+    if args.api:
+        model = args.model or API_MODEL
+        print(f"# {model} に訊いています…", file=sys.stderr)
+        solve = Api(model)
+    else:
+        model = args.model or LOCAL_MODEL
+        print(f"# {model} を読み込んでいます…", file=sys.stderr)
+        solve = Local(model)
 
-    real, missing, outside = check_citations(answer, manuscript,
-                                             allowed=allowed)
-    print(f"\n# 段落番号 実在{len(real)}件"
-          + (f" / 存在しない{len(missing)}件 {sorted(set(missing))}"
-             if missing else "")
-          + (f" / 担当範囲の外{len(outside)}件 {sorted(set(outside))}"
-             if outside else ""),
-          file=sys.stderr)
+    flawed = False
+    for index, (head, body, allowed, label) in enumerate(jobs):
+        print(f"# {args.mode}モード / {label}", file=sys.stderr)
+        if index:
+            print("\n" + "=" * 64 + "\n")
+        answer = solve(head, body, args.tokens)
+        print(answer)
+        flawed |= report(answer, manuscript, allowed)
     return 0
 
 

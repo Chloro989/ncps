@@ -18,17 +18,18 @@ python main.py test                     # 試験を全部走らせる
 | 命令 | すること | モデル |
 |---|---|---|
 | `read` | 章・段落・切り出し・反復の一覧を見る | 不要 |
-| `ask` | 原稿を読ませる問いを組む(`--mode 発想/査読/接続/連想`) | 既定では不要 |
+| `ask` | 原稿を読ませる(`--mode 発想/査読/接続/連想`) | `--api`/`--run` のときだけ |
 | `check` | 答えの段落番号が実在するかを検査する | 不要 |
 | `write` | 小説を書かせる | 必要 |
-| `test` | 試験を全部走らせる(212件) | 不要 |
+| `test` | 試験を全部走らせる(246件) | 不要 |
 
 **原稿のパスは省ける。** 手元のPCならファイル選択の窓、Colab ならアップロードの
 窓が開く。`manuscripts/` に置いた原稿はファイル名だけで呼べて、
 **あの中身は git に入らない**(未発表の作品を公開リポジトリへ入れないため)。
 
 `ask` は既定でプロンプトを出すだけなので、それを好きなチャットへ貼れば
-性能の高いモデルで読ませられる。`--run` を付けたときだけモデルを読み込む。
+性能の高いモデルで読ませられる。**その場で論評まで出したいなら `--api`**
+(鍵が要る)、無料で済ませたいなら `--run`(手元のモデル、質は落ちる)。
 
 ```
 $ python main.py write 古い本を開いたときの手触りを書いて
@@ -224,18 +225,35 @@ real, missing, outside = check_citations(answer, manuscript)
 多くの査読プロンプトは「引用が実在するか確認せよ」とモデルに自己申告させるが、
 番号なら**機械が確かめられる**。
 
-### 実際に回す
+### 実際に論評させる
 
 ```bash
-python main.py read 原稿.txt                       # 塊と反復の一覧
-python main.py ask 原稿.txt --mode 発想 > 問い.txt
-python main.py ask 原稿.txt --mode 接続 --dream
-python main.py check 答え.txt 原稿.txt --chunk 2
+python main.py ask 原稿.txt --mode 発想 --api        # その場で論評させる
+python main.py ask 原稿.txt --mode 発想 --api --all  # 最初から最後まで
+python main.py ask 原稿.txt --mode 接続 --api --dream
 ```
 
-既定では**プロンプトを出すだけ**でモデルを呼ばない。手元にGPUが無くても
-使えるようにするためで、出したものを好きなチャットへ貼れば性能の高い
-モデルで読ませられる。`--run` を付けたときだけモデルを読み込む(Colab を想定)。
+`--api` は Claude に解かせ、**答えの段落番号の検査まで自動で通す**。
+鍵は環境変数 `ANTHROPIC_API_KEY` から読むだけで、この道具は保存も表示もしない。
+
+```bash
+setx ANTHROPIC_API_KEY "自分の鍵"      # Windows。設定後に端末を開き直す
+```
+
+`--all` は塊ごとに観点を入れ替える。全部の塊に同じ観点を当てると
+同じ角度の指摘が並ぶだけになるため(Phase 9 の処方)。
+
+`--run` にすると手元(か Colab)のモデルで解く。無料だが、
+**3B級では論評の質が出ない**。
+
+### 鍵を使わない道
+
+```bash
+python main.py read 原稿.txt                        # 塊と反復の一覧
+python main.py ask 原稿.txt --mode 発想 > 問い.txt   # 問いを出す
+#  問い.txt を好きなチャットへ貼り、答えを 答え.txt に保存してから
+python main.py check 答え.txt 原稿.txt --chunk 1     # 段落番号を検査する
+```
 
 `check` は二種類の誤りを見つける。
 
@@ -287,7 +305,7 @@ centurion/          製品
   connect.py        遠い二つを繋ぐ。反復の検出と対の選定 (モデル不要)
   critique.py       原稿を読ませる実行系。既定はプロンプトを出すだけ
   __main__.py       write のコマンドライン
-tests/              モデルを読まずに確かめられる部分の試験 (212件)
+tests/              モデルを読まずに確かめられる部分の試験 (246件)
 experiments/        実験の記録。凍結してある
 results/            測定の生データと報告
 ```

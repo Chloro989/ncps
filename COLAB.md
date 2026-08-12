@@ -9,10 +9,21 @@
 %cd /content/ncps
 ```
 
-### 原稿を読ませる (モデル不要)
+### 原稿を読ませる (GPU不要)
 
-`read` `ask` `check` はモデルを使わないので、これだけで動く。
+`read` `ask` `check` は GPU を使わないので、clone しただけで動く。
 `ask` が出したものを Claude なり ChatGPT なりに貼れば、性能の高いモデルで読ませられる。
+
+その場で論評まで出すなら、鍵を置いてから `--api` を付ける。
+
+```python
+import os
+os.environ['ANTHROPIC_API_KEY'] = '自分の鍵'     # console.anthropic.com で作る
+```
+
+```python
+!python main.py ask 第五稿.txt --mode 発想 --api --all
+```
 
 **まずセルの中でアップロードする。** 窓は IPython の kernel を通して開くので、
 `!python` で起動した子プロセスからは開けない。

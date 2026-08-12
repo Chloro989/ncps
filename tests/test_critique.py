@@ -10,6 +10,7 @@
 """
 
 import io
+import os
 import sys
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -113,6 +114,67 @@ try:
 except SystemExit:
     ok = True
 check("存在しない塊を指定したら止まる", ok)
+
+print("\n== 全部の塊を読ませる ==")
+code, out = run(str(NOVEL), "--size", "600", "--all", "--seed", "5")
+check("塊の数だけ問いが並ぶ", out.count("\n---\n") == len(chunks),
+      f"{out.count(chr(10) + '---' + chr(10))} 対 {len(chunks)}")
+check("塊の間に区切りが入る", "=" * 64 in out)
+
+first = critique.tasks(Manuscript.load(NOVEL),
+                       critique.build_parser().parse_args(
+                           [str(NOVEL), "--size", "600", "--all",
+                            "--seed", "5"]))
+check("塊ごとに観点が変わる",
+      len({job[3] for job in first}) == len(first),
+      str([job[3] for job in first]))
+check("種を固定すれば同じ観点になる",
+      [job[3] for job in first]
+      == [job[3] for job in critique.tasks(
+          Manuscript.load(NOVEL),
+          critique.build_parser().parse_args(
+              [str(NOVEL), "--size", "600", "--all", "--seed", "5"]))])
+try:
+    run(str(NOVEL), "--mode", "連想", "--all")
+    refused = False
+except SystemExit as stop:
+    refused = "--all は発想と査読" in str(stop)
+check("接続と連想では --all を断る", refused)
+
+print("\n== モデルの呼び分け ==")
+saved = os.environ.pop("ANTHROPIC_API_KEY", None)
+try:
+    try:
+        critique.Api()
+        guarded = False
+    except SystemExit as stop:
+        guarded = "ANTHROPIC_API_KEY" in str(stop)
+    check("鍵が無ければ止まる", guarded)
+    try:
+        critique.Api()
+    except SystemExit as stop:
+        check("鍵の作り方を伝える", "console.anthropic.com" in str(stop))
+        check("鍵を保存しないと明言する", "保存も表示もしない" in str(stop))
+finally:
+    if saved is not None:
+        os.environ["ANTHROPIC_API_KEY"] = saved
+
+os.environ["ANTHROPIC_API_KEY"] = "試験用の偽の鍵"
+try:
+    caller = critique.Api("試験用のモデル")
+    check("鍵があれば作れる", caller.model == "試験用のモデル")
+    check("鍵を控える", caller.key == "試験用の偽の鍵")
+finally:
+    if saved is None:
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+    else:
+        os.environ["ANTHROPIC_API_KEY"] = saved
+
+check("既定のモデルが定まっている",
+      critique.API_MODEL.startswith("claude")
+      and "Qwen" in critique.LOCAL_MODEL)
+check("論評に足りる長さを取る", critique.MAX_TOKENS >= 2000,
+      str(critique.MAX_TOKENS))
 
 print("\n== 段落番号の検査 ==")
 with TemporaryDirectory() as folder:

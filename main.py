@@ -4,8 +4,9 @@
     python main.py                          何ができるかを出す
     python main.py read                     原稿を読む(窓が開く)
     python main.py read 第五稿.txt
-    python main.py ask --mode 発想           問いを組む
-    python main.py ask --mode 接続 --dream
+    python main.py ask --mode 発想           問いを組む(出すだけ)
+    python main.py ask --mode 発想 --api     その場で論評させる
+    python main.py ask --mode 発想 --api --all   原稿を最初から最後まで
     python main.py check 答え.txt --chunk 2  段落番号を検査する
     python main.py write 青色にまつわる話を聞かせて
     python main.py test                     試験を全部走らせる
@@ -14,9 +15,16 @@
 Colab ならアップロードの窓が開く。
 manuscripts/ に置いた原稿はファイル名だけで呼べる(あの中身は git に入らない)。
 
-read / ask / check は**モデルを使わない**ので、GPUが無くても動く。
-ask は既定でプロンプトを出すだけなので、それを好きなチャットへ貼れば
-性能の高いモデルで読ませられる。--run を付けたときだけモデルを読み込む。
+read / check はモデルを使わないので、GPUが無くても動く。
+ask も既定ではプロンプトを出すだけで、それを好きなチャットへ貼れば
+性能の高いモデルで読ませられる。
+
+その場で論評まで出したいときは ask に次のどちらかを付ける。
+  --api  Claude の API に解かせる。鍵は環境変数 ANTHROPIC_API_KEY から読む。
+         文芸の論評に耐える質が要るならこちら
+  --run  手元(か Colab)のモデルに解かせる。無料だが 3B級では質が出ない
+どちらも、答えの段落番号が実在するかの検査まで自動で通す。
+
 write だけは必ずモデルを読み込む。
 """
 
@@ -32,7 +40,7 @@ if str(HERE) not in sys.path:
 USAGE = """センチュリオン
 
   read   [原稿]        章・段落・切り出し・反復の一覧を見る
-  ask    [原稿]        原稿を読ませる問いを組む (--mode 発想/査読/接続/連想)
+  ask    [原稿]        原稿を読ませる (--mode 発想/査読/接続/連想)
   check  答え [原稿]   答えの段落番号が実在するかを検査する
   write  お題...       小説を書かせる (モデルが要る)
   test                 試験を全部走らせる
@@ -40,10 +48,23 @@ USAGE = """センチュリオン
 原稿のパスは省ける。手元のPCなら選択の窓、Colab ならアップロードの窓が開く。
 manuscripts/ に置いた原稿はファイル名だけで呼べる。
 
+論評させる:
+  python main.py ask 第五稿.txt --mode 発想 --api        その場で論評させる
+  python main.py ask 第五稿.txt --mode 発想 --api --all  最初から最後まで
+  python main.py ask 第五稿.txt --mode 接続 --api --dream
+
+  --api には鍵が要る。console.anthropic.com で作って環境変数に置く。
+    Windows: setx ANTHROPIC_API_KEY "自分の鍵"   (設定後に端末を開き直す)
+    Colab:   import os; os.environ['ANTHROPIC_API_KEY'] = '自分の鍵'
+  この道具は鍵を保存も表示もしない。
+
+鍵を使わない道:
+  python main.py ask 第五稿.txt --mode 発想 > 問い.txt   問いを出して
+  (問い.txt の中身を好きなチャットへ貼り、答えを 答え.txt に保存して)
+  python main.py check 答え.txt 第五稿.txt --chunk 1     段落番号を検査する
+
+そのほか:
   python main.py read
-  python main.py ask 第五稿.txt --mode 接続 --dream
-  python main.py ask 第五稿.txt --mode 発想 > 問い.txt
-  python main.py check 答え.txt 第五稿.txt --chunk 2
   python main.py write 朝の匂いについて書いて 沈黙について書いて --turns
 
 各命令の詳しい引数は -h で見られる。
