@@ -224,7 +224,9 @@ def build_parser():
                         help="原稿のファイル。省くと、手元のPCなら選択の窓、"
                              "Colab ならアップロードの窓が開く。"
                              "manuscripts/ に置いたものはファイル名だけでよい")
-    parser.add_argument("--mode", default="発想", choices=MODES)
+    parser.add_argument("--mode", default="発想", choices=MODES,
+                        help="何を訊くか (既定 発想)。"
+                             "接続は3000文字以上の原稿でしか成り立たない")
     parser.add_argument("--size", type=int, default=CHUNK_SIZE,
                         help=f"1塊の上限文字数 (既定 {CHUNK_SIZE})")
     parser.add_argument("--chunk", type=int,
@@ -262,7 +264,9 @@ def build_parser():
     parser.add_argument("--model",
                         help=f"使うモデル (手元は {LOCAL_MODEL}、"
                              f"APIは {API_MODEL})")
-    parser.add_argument("--tokens", type=int, default=MAX_TOKENS)
+    parser.add_argument("--tokens", type=int, default=MAX_TOKENS,
+                        help=f"答えの長さの上限 (既定 {MAX_TOKENS})。"
+                             "--api / --run のときだけ効く")
     parser.add_argument("--check", metavar="答え",
                         help="答えのファイルを読み、段落番号と引用を検査する")
     parser.add_argument("--out", metavar="添削.txt",

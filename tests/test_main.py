@@ -99,5 +99,32 @@ check("通過数を出す", "件通過" in out)
 code, out, _ = run("test", "test_無い")
 check("無い試験名で落とす", code == 1)
 
+print("\n== READMEと実物が合っているか ==")
+# 引数は増え続ける。書き忘れをここで止める
+readme = (HERE.parent / "README.md").read_text(encoding="utf-8")
+from centurion.critique import MODES, build_parser
+from centurion.review import LENSES
+
+flags = [option for action in build_parser()._actions
+         if action.dest != "help"
+         for option in action.option_strings
+         if option.startswith("--")]
+missing = [flag for flag in flags if flag not in readme]
+check("すべての引数がREADMEにある", not missing, str(missing))
+
+missing = [mode for mode in MODES if f"--mode {mode}" not in readme
+           and f"`{mode}`" not in readme]
+check("すべてのモードがREADMEにある", not missing, str(missing))
+
+missing = [lens.key for lens in LENSES if lens.key not in readme]
+check("すべての観点がREADMEにある", not missing, str(missing))
+
+missing = [name for name in entry.COMMANDS if f"main.py {name}" not in readme]
+check("すべての命令がREADMEにある", not missing, str(missing))
+
+check("試験の件数がREADMEに書いてある",
+      any(f"({total}件)" in readme for total in range(200, 1000)),
+      "件数の表記が見つからない")
+
 print(f"\n{passed}件通過 / {failed}件失敗")
 raise SystemExit(1 if failed else 0)
