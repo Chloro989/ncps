@@ -30,6 +30,8 @@ import random
 import sys
 import urllib.error
 import urllib.request
+from datetime import datetime
+from pathlib import Path
 
 from .answer import annotate, find_quotes, report_quotes
 from .connect import (DREAM_WORK, MIN_CHARS, build_chain_prompt,
@@ -181,7 +183,7 @@ def compose(manuscript, args, chunk=None, nudge=0):
         allowed = {p.index for p in chunk.paragraphs}
         return (head, body, allowed,
                 f"{chunks.index(chunk) + 1}/{len(chunks)}塊 "
-                f"観点: {'／'.join(l.key for l in lenses)} ({how})")
+                f"{'／'.join(l.key for l in lenses)} [{how}]")
 
     if args.mode == "接続":
         # 反復があればそれを優先する。作者がすでに植えた種のほうが確度が高い
@@ -369,7 +371,9 @@ def run_check(manuscript, args):
     print(report_quotes(quotes))
 
     if args.out:
-        write_annotated(args.out, answer, manuscript)
+        write_annotated(args.out, answer, manuscript,
+                        annotation_records(args, manuscript,
+                                           source=args.check))
         return 1 if missing or outside or any(not q.ok for q in quotes) else 0
 
     print("\n--- 番号を本文に戻したもの ---")
@@ -377,8 +381,41 @@ def run_check(manuscript, args):
     return 1 if missing or outside or any(not q.ok for q in quotes) else 0
 
 
-def write_annotated(path, answer, manuscript, label="", lenses=""):
-    text = annotate(answer, manuscript, label=label, lenses=lenses)
+def used_model(args):
+    """どのモデルに解かせたかを一行で。
+    貼り付けた答えを検査するときは、こちらには分からない"""
+    if args.api:
+        return f"{args.model or API_MODEL} (API)"
+    if args.run:
+        return f"{args.model or LOCAL_MODEL} (手元)"
+    if args.model:
+        return f"{args.model} (申告)"
+    return "不明 (外で解かせた答え)"
+
+
+def annotation_records(args, manuscript, labels=(), source=""):
+    """添削ファイルの見出しに残すもの。
+    どのモードで、どのモデルに、どの範囲を、どの観点で読ませたか。
+
+    貼り付けた答えを検査した場合は、こちらでは範囲も観点も分からない。
+    その代わり、どのファイルを検査したかを残す"""
+    records = [
+        ("日付", datetime.now().strftime("%Y-%m-%d %H:%M")),
+        ("モード", args.mode if not source else f"{args.mode} (申告)"),
+        ("モデル", used_model(args)),
+        ("原稿", f"{len(manuscript.text)}文字 / "
+                 f"{len(manuscript.paragraphs)}段落"),
+    ]
+    if source:
+        records.append(("検査した答え", Path(source).name))
+    if labels:
+        records.append(("読ませた範囲と観点", " / ".join(labels)))
+    records.append(("語の取り出し", args.words))
+    return records
+
+
+def write_annotated(path, answer, manuscript, records=()):
+    text = annotate(answer, manuscript, records=records)
     with open(path, "w", encoding="utf-8") as out:
         out.write(text + "\n")
     print(f"# 添削を {path} に書いた", file=sys.stderr)
@@ -478,8 +515,9 @@ def main(argv=None):
     if args.out:
         write_annotated(
             args.out, "\n\n".join(answer for answer, _ in collected),
-            manuscript, label=f"{args.mode}モード",
-            lenses=" / ".join(label for _, label in collected))
+            manuscript,
+            annotation_records(args, manuscript,
+                               [label for _, label in collected]))
     return 0
 
 

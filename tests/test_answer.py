@@ -102,10 +102,21 @@ for mark in ("〜", "～", "-"):
           str(sorted(spanned)))
 
 print("\n== 添削ファイル ==")
-text = annotate(mixed, work, label="発想モード", lenses="視点／熱量")
+# 何のモードで、どのモデルに解かせた添削なのかが残っていないと、
+# 溜まった添削を並べて比べられない
+RECORDS = [("日付", "2026-08-12 13:00"), ("モード", "発想"),
+           ("モデル", "claude-sonnet-5 (API)"), ("観点", "視点／熱量"),
+           ("空の項目", "")]
+text = annotate(mixed, work, records=RECORDS)
 check("題が入る", text.startswith("# "))
-check("モードが入る", "発想モード" in text)
+check("モードが入る", "# モード: 発想" in text)
+check("モデルが入る", "# モデル: claude-sonnet-5 (API)" in text)
+check("日付が入る", "# 日付: 2026-08-12 13:00" in text)
 check("観点が入る", "視点／熱量" in text)
+check("中身の無い項目は出さない", "空の項目" not in text)
+check("記録は照合より先に来る",
+      text.index("# モード") < text.index("# 引用の照合"))
+check("記録が無くても作れる", annotate(mixed, work).startswith("# "))
 check("照合の件数が入る", "一致1件" in text)
 check("捨てるべき指摘があると警告する", "捨てること" in text)
 check("本文が全段落そのまま入る",

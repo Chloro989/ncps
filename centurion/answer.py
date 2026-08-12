@@ -123,11 +123,14 @@ def attach(answer, manuscript):
     return preamble, notes
 
 
-def annotate(answer, manuscript, label="", lenses="", width=68):
+def annotate(answer, manuscript, records=()):
     """本文の各段落の下に、その段落あての指摘を貼った文章を作る。
 
     照合に落ちた指摘には印を付ける。信じてよいものと捨てるものを
-    分けて見せないと、添削として使えない"""
+    分けて見せないと、添削として使えない。
+
+    records は (見出し, 中身) の並び。何のモードで、どのモデルに
+    解かせた添削なのかが残っていないと、溜まった添削を並べて比べられない"""
     quotes = find_quotes(answer, manuscript)
     bad_lines = {q.line for q in quotes if not q.ok}
     preamble, notes = attach(answer, manuscript)
@@ -137,10 +140,9 @@ def annotate(answer, manuscript, label="", lenses="", width=68):
     if manuscript.author:
         head += f" ({manuscript.author})"
     out.append(head)
-    if label:
-        out.append(f"# {label}")
-    if lenses:
-        out.append(f"# 観点: {lenses}")
+    for name, value in records:
+        if value:
+            out.append(f"# {name}: {value}")
 
     ok = sum(1 for q in quotes if q.ok)
     if quotes:

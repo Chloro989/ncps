@@ -207,6 +207,46 @@ check("既定のモデルが定まっている",
 check("論評に足りる長さを取る", critique.MAX_TOKENS >= 2000,
       str(critique.MAX_TOKENS))
 
+print("\n== 添削ファイルの記録 ==")
+manuscript = Manuscript.load(NOVEL)
+
+
+def records_for(*extra):
+    args = critique.build_parser().parse_args([str(NOVEL)] + list(extra))
+    return dict(critique.annotation_records(
+        args, manuscript, labels=["1/1塊 視点／熱量 [実測]"]))
+
+
+check("日付を残す", "日付" in records_for())
+check("モードを残す", records_for("--mode", "査読")["モード"] == "査読")
+check("原稿の大きさを残す", "段落" in records_for()["原稿"])
+check("観点を残す", "視点／熱量" in records_for()["読ませた範囲と観点"])
+check("語の取り出し方を残す", records_for()["語の取り出し"] == "正規表現")
+
+check("APIなら API と分かる", "(API)" in records_for("--api")["モデル"])
+check("APIの既定モデルを残す",
+      critique.API_MODEL in records_for("--api")["モデル"])
+check("手元なら 手元 と分かる", "(手元)" in records_for("--run")["モデル"])
+check("手元の既定モデルを残す",
+      critique.LOCAL_MODEL in records_for("--run")["モデル"])
+check("名指ししたモデルを残す",
+      "LiquidAI/LFM2-1.2B" in
+      records_for("--run", "--model", "LiquidAI/LFM2-1.2B")["モデル"])
+check("解かせていなければ不明と書く",
+      "不明" in records_for()["モデル"])
+check("申告されたモデルはそう書く",
+      "(申告)" in records_for("--model", "外のモデル")["モデル"])
+
+args = critique.build_parser().parse_args([str(NOVEL), "--check", "答え.txt"])
+checked = dict(critique.annotation_records(args, manuscript,
+                                           source="どこか/答え.txt"))
+check("検査した答えのファイル名を残す", checked["検査した答え"] == "答え.txt")
+check("パスは残さずファイル名だけにする",
+      "どこか" not in checked["検査した答え"])
+check("外の答えならモードは申告扱い", "(申告)" in checked["モード"])
+check("範囲が分からなければその欄を出さない",
+      "読ませた範囲と観点" not in checked)
+
 print("\n== 段落番号の検査 ==")
 with TemporaryDirectory() as folder:
     answer = Path(folder) / "answer.txt"
