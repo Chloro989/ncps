@@ -201,6 +201,28 @@ finally:
     else:
         os.environ["ANTHROPIC_API_KEY"] = saved
 
+print("\n== llama.cpp ==")
+# 手元の RX 6700 XT では torch が動かない。llama.cpp なら Vulkan で
+# AMDのGPUを使えるので、Colab に行かずに済む
+caller = critique.Llama()
+check("既定の窓口を持つ", caller.url == critique.LLAMA_URL)
+check("窓口を差し替えられる",
+      critique.Llama(url="http://例:9999/v1/chat/completions").url
+      == "http://例:9999/v1/chat/completions")
+check("モデル名を渡さなくても作れる", caller.model == "local")
+check("モデル名を渡せる", critique.Llama("LFM2.5-1.2B-JP").model
+      == "LFM2.5-1.2B-JP")
+try:
+    critique.Llama(url="http://127.0.0.1:1/v1/chat/completions")(
+        "指示", "本文")
+    reached = True
+except SystemExit as stop:
+    reached = False
+    message = str(stop)
+check("届かなければ止まる", not reached)
+check("サーバの立て方を伝える", "llama-server" in message)
+check("鍵は要らない", "ANTHROPIC_API_KEY" not in message)
+
 check("既定のモデルが定まっている",
       critique.API_MODEL.startswith("claude")
       and "Qwen" in critique.LOCAL_MODEL)
@@ -227,6 +249,11 @@ check("APIなら API と分かる", "(API)" in records_for("--api")["モデル"]
 check("APIの既定モデルを残す",
       critique.API_MODEL in records_for("--api")["モデル"])
 check("手元なら 手元 と分かる", "(手元)" in records_for("--run")["モデル"])
+check("llama.cpp ならそう分かる",
+      "(llama.cpp)" in records_for("--llama")["モデル"])
+check("llama.cpp でもモデル名を残せる",
+      "LFM2.5-1.2B-JP" in
+      records_for("--llama", "--model", "LFM2.5-1.2B-JP")["モデル"])
 check("手元の既定モデルを残す",
       critique.LOCAL_MODEL in records_for("--run")["モデル"])
 check("名指ししたモデルを残す",

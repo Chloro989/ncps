@@ -7,10 +7,10 @@
 | 命令 | すること | モデル |
 |---|---|---|
 | `read` | 原稿の構造・反復を見る | 不要 |
-| `ask` | 原稿を読ませて論評・発想を得る | `--api`/`--run` のときだけ |
+| `ask` | 原稿を読ませて論評・発想を得る | 解かせるときだけ |
 | `check` | 答えが本文と食い違っていないか検査する | 不要 |
 | `write` | 小説を書かせる | 必要 |
-| `test` | 試験を全部走らせる(352件) | 不要 |
+| `test` | 試験を全部走らせる(361件) | 不要 |
 
 ---
 
@@ -65,7 +65,8 @@ python main.py read 第五稿.txt
 
 ## 4. 論評させる
 
-道は三つある。**質が要るなら 4-A、無料で済ませたいなら 4-B。**
+道は四つある。**質が要るなら 4-A、無料で済ませたいなら 4-B、
+手元のGPUで回したいなら 4-C。**
 
 ### 4-A. その場で論評させる (鍵が要る)
 
@@ -101,7 +102,37 @@ python main.py ask 第五稿.txt --mode 発想 > 問い.txt
 python main.py check 答え.txt 第五稿.txt --out 添削.txt
 ```
 
-### 4-C. 手元のモデルで解かせる (無料、質は落ちる)
+### 4-C. 手元の llama.cpp で解かせる (無料、AMDのGPUでも動く)
+
+**手元にAMDのGPUしかないなら、これが唯一のGPUの道。**
+torch は RX 6700 XT を使えないが、llama.cpp は Vulkan で使える。
+
+別の窓でサーバを立てる。
+
+```bash
+llama-server -hf LiquidAI/LFM2.5-1.2B-JP-202606-GGUF --port 8080
+```
+
+```bash
+python main.py ask 第五稿.txt --mode 発想 --llama --model LFM2.5-1.2B-JP
+```
+
+| 引数 | 既定 | 意味 |
+|---|---|---|
+| `--llama` | — | 立ててある llama-server に解かせる |
+| `--llama-url` | `http://127.0.0.1:8080/v1/chat/completions` | サーバの窓口 |
+
+`--model` はここでは**記録のためだけ**に使う(どのモデルを載せたかは
+サーバ側で決まっているため)。添削ファイルに `(llama.cpp)` として残る。
+
+日本語特化の [LFM2.5-1.2B-JP-GGUF](https://huggingface.co/LiquidAI/LFM2.5-1.2B-JP-202606-GGUF)
+のほか、GGUF ならどれでも載せられる。
+
+**注意:** llama.cpp ではロジットに手を入れられないので、
+小説を書かせる側 (`write`) の抑圧は使えない。論評では抑圧を使っていないため、
+こちらは問題にならない。
+
+### 4-D. 手元の transformers で解かせる (NVIDIAのGPUが要る)
 
 ```bash
 python main.py ask 第五稿.txt --mode 発想 --run
@@ -112,7 +143,8 @@ python main.py ask 第五稿.txt --mode 発想 --run --model LiquidAI/LFM2-1.2B
 `transformers` 5.14 は LiquidAI の LFM2 系(`lfm2` / `lfm2_moe` / `lfm2_vl`)に
 対応済みなので、追加の作業なしで動く。
 
-3B級では**引用14件中8件を取り違えた**実測がある。下の「検査」を必ず通すこと。
+小さいモデルでは**引用14件中8件を取り違えた**実測がある(Qwen2.5-3B)。
+下の「検査」を必ず通すこと。
 
 ## 5. 添削を受け取る
 
@@ -138,6 +170,7 @@ python main.py ask 第五稿.txt --mode 発想 --run --model LiquidAI/LFM2-1.2B
 | 解かせ方 | 記録 |
 |---|---|
 | `--api` | `claude-sonnet-5 (API)` |
+| `--llama` | `LFM2.5-1.2B-JP (llama.cpp)` |
 | `--run` | `Qwen/Qwen2.5-3B-Instruct (手元)` |
 | `check`(外で解かせた答え) | `不明 (外で解かせた答え)` |
 | `check --model 名` | `名 (申告)` — 何に解かせたかを自分で記録できる |
@@ -341,14 +374,24 @@ python main.py ask 第五稿.txt --mode 連想 --steps 6
 | 引数 | 既定 | 意味 |
 |---|---|---|
 | `--api` | — | Claude の API に解かせる。鍵は環境変数 `ANTHROPIC_API_KEY` から読む |
-| `--run` | — | 手元(か Colab)のモデルに解かせる。GPUが要る |
-| `--model 名` | api: `claude-sonnet-5` / run: `Qwen/Qwen2.5-3B-Instruct` | 使うモデル。HuggingFace のどの名前でも渡せる |
-| `--tokens N` | 4000 | 答えの長さの上限。`--api` / `--run` のときだけ効く |
+| `--llama` | — | 立ててある llama-server に解かせる。**AMDのGPUでも動く** |
+| `--llama-url URL` | `http://127.0.0.1:8080/v1/chat/completions` | llama-server の窓口 |
+| `--run` | — | 手元(か Colab)の transformers に解かせる。NVIDIAのGPUが要る |
+| `--model 名` | api: `claude-sonnet-5` / run: `Qwen/Qwen2.5-3B-Instruct` | 使うモデル。`--llama` のときは記録のためだけ |
+| `--tokens N` | 4000 | 答えの長さの上限。解かせるときだけ効く |
 
 ```bash
 python main.py ask 第五稿.txt --api --model claude-opus-5
+python main.py ask 第五稿.txt --llama --model LFM2.5-1.2B-JP
 python main.py ask 第五稿.txt --run --model LiquidAI/LFM2-1.2B
 ```
+
+| 解かせ方 | GPU | 費用 | 質 |
+|---|---|---|---|
+| `--api` | 不要 | かかる | 高い |
+| `--llama` | AMD可 / CPUでも | 無料 | モデル次第 |
+| `--run` | NVIDIA | 無料 | モデル次第 |
+| 何も付けない | 不要 | 無料 | 貼る先のモデル次第 |
 
 ## 7. 結果をどうするか
 
@@ -711,7 +754,7 @@ centurion/          製品
   answer.py         答えの照合と添削ファイルの組み立て (モデル不要)
   critique.py       原稿を読ませる実行系。既定はプロンプトを出すだけ
   __main__.py       write のコマンドライン
-tests/              モデルを読まずに確かめられる部分の試験 (352件)
+tests/              モデルを読まずに確かめられる部分の試験 (361件)
 experiments/        実験の記録。凍結してある
 results/            測定の生データと報告
 ```

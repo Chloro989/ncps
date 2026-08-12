@@ -45,6 +45,17 @@ LOCAL_MODEL = "Qwen/Qwen2.5-3B-Instruct"
 API_MODEL = "claude-sonnet-5"
 API_URL = "https://api.anthropic.com/v1/messages"
 API_VERSION = "2023-06-01"
+
+# llama.cpp の llama-server。OpenAI と同じ形の窓口を出す。
+#
+# これが要る理由は速さではない。手元の RX 6700 XT では torch が動かず、
+# --run はGPUを使えない。llama.cpp は Vulkan で AMD のGPUを使えるので、
+# Colab に行かずに手元で回せるようになる。
+#
+# 注意: llama.cpp ではロジットに手を入れられないので、
+# 小説を書かせる側の抑圧(type5設定)は使えない。
+# ただし論評では抑圧を使っていないため、こちらは問題にならない
+LLAMA_URL = "http://127.0.0.1:8080/v1/chat/completions"
 MAX_TOKENS = 4000          # 論評は長い。小説生成の150では話にならない
 CHUNK_SIZE = 6000
 MODES = ["発想", "査読", "接続", "連想"]
@@ -81,6 +92,47 @@ class Local:
                 pad_token_id=self.tokenizer.eos_token_id)
         return self.tokenizer.decode(
             output[0][inputs.input_ids.shape[1]:], skip_special_tokens=True)
+
+
+class Llama:
+    """llama.cpp の llama-server に解かせる。
+
+    先に別の窓でサーバを立てておく。
+
+        llama-server -hf LiquidAI/LFM2.5-1.2B-JP-202606-GGUF --port 8080
+
+    GGUF を手元に落としてあるなら -m 置き場所.gguf でもよい。
+    AMD のGPUを使うなら Vulkan 版の llama.cpp を入れること"""
+
+    def __init__(self, model="", url=LLAMA_URL):
+        self.model = model or "local"
+        self.url = url
+
+    def __call__(self, head, body, max_tokens=MAX_TOKENS):
+        payload = json.dumps({
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "temperature": 0.7,
+            "messages": [{"role": "system", "content": head},
+                         {"role": "user", "content": body}],
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            self.url, data=payload,
+            headers={"content-type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=1800) as response:
+                answer = json.load(response)
+        except urllib.error.HTTPError as problem:
+            detail = problem.read().decode("utf-8", "replace")[:400]
+            raise SystemExit(f"llama-server が断った "
+                             f"({problem.code}): {detail}")
+        except urllib.error.URLError as problem:
+            raise SystemExit(
+                f"llama-server に届かない ({self.url}): {problem.reason}\n"
+                "先に別の窓でサーバを立てること:\n"
+                "  llama-server -hf LiquidAI/LFM2.5-1.2B-JP-202606-GGUF"
+                " --port 8080")
+        return answer["choices"][0]["message"]["content"]
 
 
 class Api:
@@ -261,6 +313,11 @@ def build_parser():
     parser.add_argument("--api", action="store_true",
                         help="その場で Claude の API に解かせる。"
                              "鍵は環境変数 ANTHROPIC_API_KEY から読む")
+    parser.add_argument("--llama", action="store_true",
+                        help="立ててある llama-server に解かせる。"
+                             "AMDのGPUでも動く")
+    parser.add_argument("--llama-url", default=LLAMA_URL,
+                        help=f"llama-server の窓口 (既定 {LLAMA_URL})")
     parser.add_argument("--all", action="store_true",
                         help="全部の塊を順に読ませる (発想・査読のみ)")
     parser.add_argument("--model",
@@ -386,6 +443,8 @@ def used_model(args):
     貼り付けた答えを検査するときは、こちらには分からない"""
     if args.api:
         return f"{args.model or API_MODEL} (API)"
+    if args.llama:
+        return f"{args.model or '不明'} (llama.cpp)"
     if args.run:
         return f"{args.model or LOCAL_MODEL} (手元)"
     if args.model:
@@ -478,7 +537,7 @@ def main(argv=None):
 
     jobs = tasks(manuscript, args)
 
-    if not args.run and not args.api:
+    if not args.run and not args.api and not args.llama:
         # 貼りやすい形で出す。指示と本文の境目を残す
         for index, (head, body, _, label) in enumerate(jobs):
             print(f"# {args.mode}モード / {label}", file=sys.stderr)
@@ -497,6 +556,10 @@ def main(argv=None):
         model = args.model or API_MODEL
         print(f"# {model} に訊いています…", file=sys.stderr)
         solve = Api(model)
+    elif args.llama:
+        print(f"# {args.llama_url} の llama-server に訊いています…",
+              file=sys.stderr)
+        solve = Llama(args.model or "", args.llama_url)
     else:
         model = args.model or LOCAL_MODEL
         print(f"# {model} を読み込んでいます…", file=sys.stderr)
