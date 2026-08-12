@@ -16,7 +16,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-from centurion.connect import (DREAM_WORK, GENERIC, MOTIF_TIMES,
+from centurion.connect import (DREAM_WORK, GENERIC, MIN_CHARS, MOTIF_TIMES,
                                build_chain_prompt, build_connection_prompt,
                                content_words, distant_pairs, once_only,
                                overlap, recurrences)
@@ -74,7 +74,9 @@ check("共通語が無ければ0", overlap("硝子が鳴った。", "電車が�
 check("空文なら0", overlap("", "硝子") == 0.0)
 
 print("\n== 反復 ==")
-found = recurrences(planted)
+# 実距離の下限はこの節では切っておく。合成原稿は700文字ほどしかなく、
+# 下限を効かせると何も残らない。下限そのものは次の節で確かめる
+found = recurrences(planted, min_chars=0)
 words = [item.word for item in found]
 check("端と端に置いた語を見つける", "万華鏡" in words, str(words))
 check("埋め草の語は上位に来ない", words[0] == "万華鏡", str(words[:3]))
@@ -90,23 +92,45 @@ check("表示に段落番号が入る", "[0]" in str(motif) and "[9]" in str(mot
 
 near = build("万華鏡を覗いた。", "万華鏡を仕舞った。", *FILLER)
 check("近すぎる反復は拾わない",
-      "万華鏡" not in [i.word for i in recurrences(near)])
+      "万華鏡" not in [i.word for i in recurrences(near, min_chars=0)])
 
 generic = build("　彼は自分のことを話しはじめた。長い話だった。", *FILLER,
                 "　最後に自分の名前だけを言い残していった。")
-check("一般語は除く", "自分" not in [i.word for i in recurrences(generic)])
+check("一般語は除く",
+      "自分" not in [i.word for i in recurrences(generic, min_chars=0)])
 check("一般語の一覧が空でない", len(GENERIC) > 20)
 
 many = build(*[f"　レースの話を{i}度目にした日のことである。" for i in range(6)],
              *FILLER)
-found_many = [i for i in recurrences(many) if i.word == "レース"]
+found_many = [i for i in recurrences(many, min_chars=0)
+              if i.word == "レース"]
 check("何度も出る語は主題と呼ぶ",
       found_many and found_many[0].kind == "主題",
       str([(i.word, i.times, i.kind) for i in found_many]))
 check("反復と主題の境目が定まっている", MOTIF_TIMES >= 2)
 
+print("\n== 実距離の下限 ==")
+# 割合だけで隔たりを測ると短い作品で破綻する。太宰治「I can speak」
+# (1949文字・15段落)では「酔漢」が[8]と[12]に出て隔たり27%と表示されたが、
+# 実際には4段落しか離れておらず、しかも同じ場面の同じ人物だった
+short = build("　万華鏡を覗いた。硝子の欠片がゆっくりと崩れていった。",
+              *FILLER,
+              "　もう一度その万華鏡を覗いた。今度は何も鳴らなかった。")
+check("下限を切れば拾う",
+      "万華鏡" in [i.word for i in recurrences(short, min_chars=0)])
+check("下限を効かせれば落ちる",
+      "万華鏡" not in [i.word for i in recurrences(short, min_chars=1500)],
+      f"原稿は{len(short.text)}文字しかない")
+check("既定の下限が働いている",
+      "万華鏡" not in [i.word for i in recurrences(short)])
+check("下限の既定値が定まっている", MIN_CHARS >= 1000, str(MIN_CHARS))
+check("短い原稿では対も出ない",
+      distant_pairs(short, count=5, rng=random.Random(0)) == [])
+check("反復は実距離を持つ",
+      recurrences(short, min_chars=0)[0].chars < 1500)
+
 print("\n== 遠い対 ==")
-pairs = distant_pairs(planted, count=3, rng=random.Random(0))
+pairs = distant_pairs(planted, count=3, rng=random.Random(0), min_chars=0)
 check("求めた数だけ返す", len(pairs) == 3, str(len(pairs)))
 check("隔たりの条件を満たす", all(p.gap >= 0.2 for p in pairs))
 check("重なりの条件を満たす", all(p.overlap <= 0.12 for p in pairs))

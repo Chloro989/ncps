@@ -63,10 +63,43 @@ check("査読モードに切り替わる", "本文に無い要素について述
 check("査読では発想の規則が入らない",
       "本文に無いものを述べてよい" not in out)
 
-code, out = run(str(AOZORA), "--mode", "接続", "--seed", "1")
-check("接続モードが動く", code == 0 and "繋いでいない" in out)
 code, out = run(str(AOZORA), "--mode", "連想", "--seed", "1", "--steps", "6")
 check("連想モードが動く", code == 0 and "6歩" in out)
+
+# 接続は遠い二点を要るので、長い原稿でしか成り立たない。
+# 芥川「悪魔」は1558文字しかなく、断られるのが正しい
+try:
+    run(str(AOZORA), "--mode", "接続", "--seed", "1")
+    refusal = ""
+except SystemExit as stop:
+    refusal = str(stop)
+check("短い原稿では接続を断る", "1558文字" in refusal, refusal[:50])
+check("断る理由を述べる", "繋ぐ先が無い" in refusal)
+check("代わりに使うモードを示す", "査読と発想" in refusal)
+
+with TemporaryDirectory() as folder:
+    # 遠い二点を持つ原稿を組む。端と端に「万華鏡」を置き、間を埋め草で伸ばす
+    filler = ("　その日も同じ坂を下りて改札を抜けた。売店の灯りがついていて、"
+              "並んだ雑誌の表紙だけが明るく見えた。橋の上で立ち止まると、"
+              "水路の暗がりには何も映っていなかった。遠くで踏切が鳴って、"
+              "それから急に静かになった。")
+    long_path = Path(folder) / "長い原稿.txt"
+    long_path.write_text(
+        "\n\n".join(["　祖母の簞笥の奥に万華鏡が仕舞われていた。"
+                     "覗くと硝子の欠片が鳴って、模様がゆっくりと崩れた。"]
+                    # 遠い二点と呼べる間隔を空けるため、埋め草を厚く積む。
+                    # 同じ文を繰り返すので、埋め草の語は出現回数が多すぎて
+                    # 反復の候補から外れる。残るのは「万華鏡」だけになる
+                    + [filler] * 30
+                    + ["　病室の窓辺に万華鏡が置いてあった。"
+                       "誰が持ってきたのか、看護師に訊いても分からなかった。"]),
+        encoding="utf-8")
+    code, out = run(str(long_path), "--mode", "接続", "--seed", "1")
+    check("長い原稿では接続モードが動く", code == 0 and "繋いでいない" in out)
+    check("両端の段落を渡す", "簞笥" in out and "病室" in out)
+    code, out = run(str(long_path), "--mode", "接続", "--dream", "--seed", "1")
+    check("夢の作業を添えられる", "圧縮" in out or "移動" in out
+          or "視覚化" in out or "後付け" in out)
 
 print("\n== 塊の指定 ==")
 manuscript = Manuscript.load(NOVEL)

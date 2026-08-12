@@ -21,7 +21,7 @@ import argparse
 import random
 import sys
 
-from .connect import (DREAM_WORK, build_chain_prompt,
+from .connect import (DREAM_WORK, MIN_CHARS, build_chain_prompt,
                       build_connection_prompt, distant_pairs, recurrences)
 from .manuscript import Manuscript
 from .review import build_prompt, check_citations, choose_lenses, resolve
@@ -97,7 +97,10 @@ def compose(manuscript, args):
         else:
             pairs = distant_pairs(manuscript, count=args.top, rng=rng)
             if not pairs:
-                raise SystemExit("繋げる対が見つからない。原稿が短すぎる")
+                raise SystemExit(
+                    too_short(manuscript)
+                    or "繋げる対が見つからない。"
+                       f"どの二点も{MIN_CHARS}文字より近いか、語彙が重なっている。")
             pair = pairs[0]
             label = f"遠い対 {pair}"
         extra = [DREAM_WORK[rng.randrange(len(DREAM_WORK))]] if args.dream else ()
@@ -151,13 +154,29 @@ def build_parser():
     return parser
 
 
+def too_short(manuscript):
+    """遠い二点が取れない原稿かどうかを、理由つきで伝える文。取れるなら空"""
+    if len(manuscript.text) >= MIN_CHARS * 2:
+        return ""
+    return (f"この原稿は{len(manuscript.text)}文字で、"
+            f"遠い二点と呼べる間隔({MIN_CHARS}文字)が取れない。\n"
+            "反復も対も出ないのは仕組みの不具合ではなく、繋ぐ先が無いため。\n"
+            "接続と連想は長い原稿で使うもので、短い作品には査読と発想を使う。")
+
+
 def show_list(manuscript, args):
     print(manuscript.summary())
     chunks = manuscript.chunks(size=args.size, overlap=1)
     print(f"\n{args.size}文字ずつに切ると {len(chunks)}塊")
     for chunk in chunks:
         print("  " + str(chunk))
+
     found = recurrences(manuscript)
+    if not found:
+        print("\n反復・主題 0件")
+        print(too_short(manuscript)
+              or "遠くで繰り返される稀な語が見つからない。")
+        return
     for kind in ("反復", "主題"):
         rows = [item for item in found if item.kind == kind]
         print(f"\n{kind} {len(rows)}件" + (" (上位12)" if len(rows) > 12 else ""))

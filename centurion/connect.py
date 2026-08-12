@@ -51,6 +51,15 @@ MIN_GAP = 0.2
 MAX_OVERLAP = 0.12
 MIN_LENGTH = 30        # 短い段落は繋ぐ手がかりが足りない
 
+# 隔たりの実距離の下限。割合だけで測ると短い作品で破綻する。
+# 太宰治「I can speak」(1949文字・15段落)では、「酔漢」が[8]と[12]に出て
+# 隔たり27%と表示されたが、実際には4段落しか離れておらず、
+# しかも同じ場面の同じ人物だった。繋がりはすでに本文にあり、架ける橋がない。
+#
+# 遠いと言えるためには、読者がいったん忘れる程度の間が要る。
+# 段落数ではなく文字数で測る — 会話文と描写で段落の長さが桁違いに違うため
+MIN_CHARS = 1500
+
 # 一度きりの語を拾うのに必要な原稿の長さ。
 # 4500文字の抜粋では221語が該当し、証明・歴史・二日目まで拾ってしまう。
 # 短い原稿では「一度きり」がほとんどの語に当てはまり、意味を成さない
@@ -99,14 +108,21 @@ class Pair:
     def crosses_chapter(self):
         return self.left.chapter != self.right.chapter
 
+    @property
+    def chars(self):
+        """二つの間に挟まっている文字数"""
+        return max(self.right.start - self.left.end, 0)
+
     def __str__(self):
         return (f"[{self.left.index}] × [{self.right.index}] "
-                f"(隔たり{self.gap:.0%} / 重なり{self.overlap:.0%}"
+                f"(隔たり{self.gap:.0%}・{self.chars}文字 "
+                f"/ 重なり{self.overlap:.0%}"
                 + ("、章をまたぐ)" if self.crosses_chapter else ")"))
 
 
 def distant_pairs(manuscript, count=5, rng=None, min_gap=MIN_GAP,
-                  max_overlap=MAX_OVERLAP, min_length=MIN_LENGTH):
+                  max_overlap=MAX_OVERLAP, min_length=MIN_LENGTH,
+                  min_chars=MIN_CHARS):
     """遠く、かつ語彙の重ならない段落の対を選ぶ。
 
     遠いだけでは足りない。語彙が重なっていれば、繋がりはもう本文にある。
@@ -123,6 +139,8 @@ def distant_pairs(manuscript, count=5, rng=None, min_gap=MIN_GAP,
             gap = abs(right.index - left.index) / total
             if gap < min_gap:
                 continue
+            if right.start - left.end < min_chars:
+                continue          # 割合では遠いが、実距離が近い
             shared = overlap(left.text, right.text)
             if shared > max_overlap:
                 continue
@@ -162,6 +180,11 @@ class Recurrence:
         return len(self.paragraphs)
 
     @property
+    def chars(self):
+        """最初と最後の間に挟まっている文字数"""
+        return max(self.paragraphs[-1].start - self.paragraphs[0].end, 0)
+
+    @property
     def kind(self):
         """回数で性質が変わる。少なければ仕掛け、多ければ作品の背骨。
         参考作品では「虫干」が2回で伏線、「レース」が10回で主題だった"""
@@ -177,10 +200,12 @@ class Recurrence:
         places = "・".join(f"[{p.index}]" for p in self.paragraphs[:6])
         if self.times > 6:
             places += f"…他{self.times - 6}箇所"
-        return f"《{self.kind}》「{self.word}」{places} (隔たり{self.gap:.0%})"
+        return (f"《{self.kind}》「{self.word}」{places} "
+                f"(隔たり{self.gap:.0%}・{self.chars}文字)")
 
 
-def recurrences(manuscript, min_gap=MIN_GAP, max_times=MAX_TIMES, min_word=2):
+def recurrences(manuscript, min_gap=MIN_GAP, max_times=MAX_TIMES, min_word=2,
+                min_chars=MIN_CHARS):
     """遠く離れて繰り返される稀な語を探す。
 
     正解の分かっている作品で確かめたところ、作者が架けた橋のうち
@@ -215,6 +240,8 @@ def recurrences(manuscript, min_gap=MIN_GAP, max_times=MAX_TIMES, min_word=2):
         gap = (paragraphs[-1].index - paragraphs[0].index) / total
         if gap < min_gap:
             continue
+        if paragraphs[-1].start - paragraphs[0].end < min_chars:
+            continue              # 割合では遠いが、実距離が近い
         found.append(Recurrence(word, paragraphs, gap))
 
     # 語の長さを先に見る。隔たりだけで並べると、
