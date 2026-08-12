@@ -33,7 +33,8 @@ import urllib.request
 
 from .answer import annotate, find_quotes, report_quotes
 from .connect import (DREAM_WORK, MIN_CHARS, build_chain_prompt,
-                      build_connection_prompt, distant_pairs, recurrences)
+                      build_connection_prompt, distant_pairs, recurrences,
+                      use_morphology)
 from .manuscript import Manuscript
 from .review import (LENS_BY_KEY, LENSES, build_prompt, check_citations,
                      choose_lenses, describe, resolve, suggest_lenses)
@@ -236,6 +237,10 @@ def build_parser():
                         help="原稿を測らず、くじ引きで観点を選ぶ")
     parser.add_argument("--survey", action="store_true",
                         help="原稿の実測と、観点ごとの必要度を出す")
+    parser.add_argument("--words", choices=["正規表現", "形態素"],
+                        default="正規表現",
+                        help="反復を探すときの語の取り出し方 (既定 正規表現)。"
+                             "形態素には fugashi と unidic-lite が要る")
     parser.add_argument("--top", type=int, default=5,
                         help="接続モードで候補の上位いくつから選ぶか")
     parser.add_argument("--steps", type=int, default=4,
@@ -411,6 +416,14 @@ def report(answer, manuscript, allowed):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if args.words == "形態素":
+        try:
+            use_morphology(True)
+        except ImportError:
+            raise SystemExit(
+                "形態素解析には fugashi と unidic-lite が要る。\n"
+                "  pip install fugashi unidic-lite")
+        print("# 語の取り出しに形態素解析を使う", file=sys.stderr)
     manuscript = Manuscript.load(args.path)
 
     if args.check:

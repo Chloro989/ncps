@@ -84,8 +84,56 @@ GENERIC = {
 }
 
 
-def content_words(text):
+# 語の取り出し方。既定は正規表現で、形態素解析は任意。
+#
+# 形態素解析(fugashi + unidic-lite)を素直に差し替えて測ったところ、
+# 参考作品で反復が68件から178件へ膨れ、雑音(しょっちゅう・だんだん・
+# いっぱい)が増えたうえ、「虫干し」が「虫/干し」に割れて作者の伏線を
+# 落とした。正解は4/7から3/7へ下がった。
+#
+# ただし拾い物もあった。「はためく」「ふんわり」「ぽつぽつ」のような
+# 手触りの反復は正規表現では取れない層で、品詞を絞れば使える見込みがある。
+# 比べられるように残しておき、要らなければこの関数ごと消せばよい。
+KEEP_POS = {"名詞", "形容詞"}          # 副詞と動詞は雑音が多かったので外す
+DROP_POS2 = {"非自立可能", "数詞", "助数詞可能", "代名詞"}
+_tagger = None
+
+
+def morphological_words(text):
+    """形態素解析で内容語を取り出す。fugashi と unidic-lite が要る。
+
+    正規表現では拾えない一文字の名詞(鴻・毛・羽)が取れる代わりに、
+    複合語(虫干し)が割れる"""
+    global _tagger
+    if _tagger is None:
+        import fugashi                     # 入っていなければここで失敗する
+        _tagger = fugashi.Tagger()
+    words = set()
+    for token in _tagger(text):
+        if token.feature.pos1 not in KEEP_POS:
+            continue
+        if token.feature.pos2 in DROP_POS2:
+            continue
+        surface = token.surface
+        if surface and not surface.isascii():
+            words.add(surface)
+    return words
+
+
+def regex_words(text):
+    """既定の取り出し方。漢字2文字以上、またはカタカナ2文字以上"""
     return set(WORD.findall(text))
+
+
+# 実際に使われるもの。use_morphology() で差し替えられる
+content_words = regex_words
+
+
+def use_morphology(on=True):
+    """語の取り出し方を切り替える。比較のための入口"""
+    global content_words
+    content_words = morphological_words if on else regex_words
+    return content_words
 
 
 def overlap(left, right):

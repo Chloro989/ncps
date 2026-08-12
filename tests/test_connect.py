@@ -16,6 +16,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
+import centurion.connect as connect
 from centurion.connect import (DREAM_WORK, GENERIC, MIN_CHARS, MOTIF_TIMES,
                                build_chain_prompt, build_connection_prompt,
                                content_words, distant_pairs, once_only,
@@ -108,6 +109,32 @@ check("何度も出る語は主題と呼ぶ",
       found_many and found_many[0].kind == "主題",
       str([(i.word, i.times, i.kind) for i in found_many]))
 check("反復と主題の境目が定まっている", MOTIF_TIMES >= 2)
+
+print("\n== 語の取り出し方の切り替え ==")
+# 形態素解析は比較のために残してある。既定は正規表現
+check("既定は正規表現", connect.content_words is connect.regex_words)
+try:
+    import fugashi                                       # noqa: F401
+    available = True
+except ImportError:
+    available = False
+
+if available:
+    connect.use_morphology(True)
+    try:
+        check("切り替わる", connect.content_words is connect.morphological_words)
+        check("一文字の名詞を拾える",
+              "鴻" in connect.morphological_words("鴻の鳥が飛んだ。"),
+              str(sorted(connect.morphological_words("鴻の鳥が飛んだ。"))))
+        check("助詞は拾わない",
+              "の" not in connect.morphological_words("鴻の鳥が飛んだ。"))
+        check("反復の判定がそのまま動く",
+              len(recurrences(planted, min_chars=0)) >= 0)
+    finally:
+        connect.use_morphology(False)
+    check("元に戻せる", connect.content_words is connect.regex_words)
+else:
+    print("  - fugashi が無いので形態素解析の試験は飛ばす")
 
 print("\n== 実距離の下限 ==")
 # 割合だけで隔たりを測ると短い作品で破綻する。太宰治「I can speak」

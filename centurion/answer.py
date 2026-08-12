@@ -26,7 +26,18 @@ import re
 from dataclasses import dataclass
 
 CITATION = re.compile(r"\[(\d+)\]")
+# 「[1] ~ [56]」のような範囲指定。両端に同じ指摘を貼ると二重になるので、
+# 先頭にだけ貼って範囲であることを添える
+RANGE = re.compile(r"\[(\d+)\]\s*[~〜～\-–—]\s*\[(\d+)\]")
 HEAD = 14              # 引用の頭から何文字を突き合わせるか
+
+# これより短い鉤括弧は本文の引用とみなさない。
+# 日本語では語をそのまま「あっちゃぐり」のように括るので、
+# 短いものまで引用として突き合わせると、正しい指摘に×が付く。
+# 実際にそれが起きた — 作中語を括っただけの指摘4件のうち3件に
+# 誤って×を付けていた。見落とすほうが、良い指摘を捨てるより安全
+QUOTE_MIN = 10
+
 MARK_OK = "▸"
 MARK_BAD = "×"
 
@@ -71,8 +82,8 @@ def find_quotes(answer, manuscript):
         if start < 0 or end <= start:
             continue
         quoted = line[start + 1:end].strip()
-        if len(quoted) < 4:
-            continue
+        if len(quoted) < QUOTE_MIN:
+            continue          # 語を括っただけ。引用ではない
         # 観点の名前(【熱量】など)を括弧で括っただけの行は本文引用ではない
         if "【" in quoted or "】" in quoted:
             continue
@@ -88,15 +99,22 @@ def find_quotes(answer, manuscript):
 
 def attach(answer, manuscript):
     """答えの各行を、宛先の段落に振り分ける。
-    番号を含まない行は前置きとしてまとめる"""
+    番号を含まない行は前置きとしてまとめる。
+
+    「[1] ~ [56]」のような範囲は先頭にだけ貼る。
+    両端に貼ると、離れた二箇所に同じ指摘が現れて紛らわしい"""
     total = len(manuscript.paragraphs)
     preamble, notes = [], {}
     for line in answer.splitlines():
         stripped = line.strip()
         if not stripped:
             continue
-        numbers = sorted({int(n) for n in CITATION.findall(stripped)})
-        inside = [n for n in numbers if 0 <= n < total]
+        spans = RANGE.findall(stripped)
+        if spans:
+            targets = {int(first) for first, _ in spans}
+        else:
+            targets = {int(n) for n in CITATION.findall(stripped)}
+        inside = sorted(n for n in targets if 0 <= n < total)
         if not inside:
             preamble.append(stripped)
             continue

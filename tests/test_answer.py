@@ -60,6 +60,13 @@ check("入れ子の括弧を扱える", len(quotes) == 1 and quotes[0].ok,
 
 check("観点の名前は引用として数えない",
       find_quotes("段落 [0] に「【一度きり】」の観点を当てる", work) == [])
+# 日本語は語をそのまま鉤括弧で括る。短いものまで引用として突き合わせると
+# 正しい指摘に×が付く。実際に作中語を括った指摘3件へ誤って×を付けていた
+check("短い語の括りは引用として数えない",
+      find_quotes("[0] ~ [3]: 「あっちゃぐり」の規則とその背景。", work) == [],
+      str(find_quotes("[0] ~ [3]: 「あっちゃぐり」の規則。", work)))
+check("十分に長い引用は数える",
+      len(find_quotes("[0] 「改札を抜けると、売店の灯りがまだ」", work)) == 1)
 check("番号が無い行は数えない", find_quotes("「改札を抜けると」", work) == [])
 check("引用が無い行は数えない", find_quotes("[0] は良い。", work) == [])
 check("短すぎる引用は数えない", find_quotes("[0] 「あ」", work) == [])
@@ -85,6 +92,14 @@ check("複数の番号があれば両方に付く",
       notes[0] == notes[3] == ["[0] と [3] は響き合っている。"])
 check("範囲外の番号は前置きへ",
       attach("[999] は冗長である。", work)[0] == ["[999] は冗長である。"])
+
+# 範囲指定を両端に貼ると、離れた二箇所に同じ指摘が現れて紛らわしい
+_, spanned = attach("[0] ~ [3]: 前半の流れについて。", work)
+check("範囲は先頭にだけ貼る", set(spanned) == {0}, str(sorted(spanned)))
+for mark in ("〜", "～", "-"):
+    _, spanned = attach(f"[1] {mark} [3]: 中ほどについて。", work)
+    check(f"区切りが {mark} でも範囲と分かる", set(spanned) == {1},
+          str(sorted(spanned)))
 
 print("\n== 添削ファイル ==")
 text = annotate(mixed, work, label="発想モード", lenses="視点／熱量")
