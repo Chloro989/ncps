@@ -31,6 +31,7 @@ import sys
 import urllib.error
 import urllib.request
 
+from .answer import annotate, find_quotes, report_quotes
 from .connect import (DREAM_WORK, MIN_CHARS, build_chain_prompt,
                       build_connection_prompt, distant_pairs, recurrences)
 from .manuscript import Manuscript
@@ -228,7 +229,9 @@ def build_parser():
                              f"APIは {API_MODEL})")
     parser.add_argument("--tokens", type=int, default=MAX_TOKENS)
     parser.add_argument("--check", metavar="答え",
-                        help="答えのファイルを読み、段落番号を検査する")
+                        help="答えのファイルを読み、段落番号と引用を検査する")
+    parser.add_argument("--out", metavar="添削.txt",
+                        help="本文の各段落の下に指摘を貼った添削ファイルを書く")
     return parser
 
 
@@ -294,9 +297,24 @@ def run_check(manuscript, args):
     if allowed is None:
         print("  ※ --chunk を渡すと、見せていない範囲への言及も検出できる")
 
+    quotes = find_quotes(answer, manuscript)
+    print()
+    print(report_quotes(quotes))
+
+    if args.out:
+        write_annotated(args.out, answer, manuscript)
+        return 1 if missing or outside or any(not q.ok for q in quotes) else 0
+
     print("\n--- 番号を本文に戻したもの ---")
     print(resolve(answer, manuscript))
-    return 1 if missing or outside else 0
+    return 1 if missing or outside or any(not q.ok for q in quotes) else 0
+
+
+def write_annotated(path, answer, manuscript, label="", lenses=""):
+    text = annotate(answer, manuscript, label=label, lenses=lenses)
+    with open(path, "w", encoding="utf-8") as out:
+        out.write(text + "\n")
+    print(f"# 添削を {path} に書いた", file=sys.stderr)
 
 
 def tasks(manuscript, args):
@@ -311,7 +329,11 @@ def tasks(manuscript, args):
 
 
 def report(answer, manuscript, allowed):
-    """答えの段落番号を検査して、気になるものだけ伝える"""
+    """答えを検査して、気になるものだけ伝える。
+
+    番号の実在と、引用の中身の両方を見る。
+    番号だけの検査では、Qwen が引用14件中8件を取り違えた答えを
+    「実在18件」として素通りさせた"""
     real, missing, outside = check_citations(answer, manuscript,
                                              allowed=allowed)
     parts = [f"実在{len(real)}件"]
@@ -322,7 +344,11 @@ def report(answer, manuscript, allowed):
         parts.append(f"見せていない範囲{len(outside)}件 {sorted(set(outside))}"
                      " ← 中身を確かめずに書いている")
     print("# 段落番号 " + " / ".join(parts), file=sys.stderr)
-    return bool(missing or outside)
+
+    quotes = find_quotes(answer, manuscript)
+    for line in report_quotes(quotes).splitlines():
+        print("# " + line, file=sys.stderr)
+    return bool(missing or outside or [q for q in quotes if not q.ok])
 
 
 def main(argv=None):
@@ -361,14 +387,21 @@ def main(argv=None):
         print(f"# {model} を読み込んでいます…", file=sys.stderr)
         solve = Local(model)
 
-    flawed = False
+    collected = []
     for index, (head, body, allowed, label) in enumerate(jobs):
         print(f"# {args.mode}モード / {label}", file=sys.stderr)
         if index:
             print("\n" + "=" * 64 + "\n")
         answer = solve(head, body, args.tokens)
         print(answer)
-        flawed |= report(answer, manuscript, allowed)
+        report(answer, manuscript, allowed)
+        collected.append((answer, label))
+
+    if args.out:
+        write_annotated(
+            args.out, "\n\n".join(answer for answer, _ in collected),
+            manuscript, label=f"{args.mode}モード",
+            lenses=" / ".join(label for _, label in collected))
     return 0
 
 

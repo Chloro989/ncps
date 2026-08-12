@@ -49,9 +49,12 @@ USAGE = """センチュリオン
 manuscripts/ に置いた原稿はファイル名だけで呼べる。
 
 論評させる:
-  python main.py ask 第五稿.txt --mode 発想 --api        その場で論評させる
+  python main.py ask 第五稿.txt --mode 発想 --api --out 添削.txt
   python main.py ask 第五稿.txt --mode 発想 --api --all  最初から最後まで
   python main.py ask 第五稿.txt --mode 接続 --api --dream
+
+  --out を付けると、本文の各段落の下にその段落あての指摘を貼った
+  添削ファイルを書く。引用が本文と食い違う指摘には × が付く。
 
   --api には鍵が要る。console.anthropic.com で作って環境変数に置く。
     Windows: setx ANTHROPIC_API_KEY "自分の鍵"   (設定後に端末を開き直す)
@@ -61,7 +64,11 @@ manuscripts/ に置いた原稿はファイル名だけで呼べる。
 鍵を使わない道:
   python main.py ask 第五稿.txt --mode 発想 > 問い.txt   問いを出して
   (問い.txt の中身を好きなチャットへ貼り、答えを 答え.txt に保存して)
-  python main.py check 答え.txt 第五稿.txt --chunk 1     段落番号を検査する
+  python main.py check 答え.txt 第五稿.txt --out 添削.txt
+
+  check は段落番号の実在と、引用の中身が本文と一致するかを見る。
+  番号だけの検査では、3Bモデルが引用14件中8件を取り違えた答えを
+  素通りさせた。うち3件は本文に存在しない文だった。
 
 そのほか:
   python main.py read
@@ -73,7 +80,7 @@ manuscripts/ に置いた原稿はファイル名だけで呼べる。
 """
 
 TESTS = ["test_centurion", "test_manuscript", "test_review",
-         "test_connect", "test_critique", "test_main"]
+         "test_connect", "test_answer", "test_critique", "test_main"]
 
 
 def cmd_read(rest):
