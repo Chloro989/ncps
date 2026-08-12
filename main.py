@@ -56,6 +56,12 @@ manuscripts/ に置いた原稿はファイル名だけで呼べる。
   --out を付けると、本文の各段落の下にその段落あての指摘を貼った
   添削ファイルを書く。引用が本文と食い違う指摘には × が付く。
 
+観点の決め方:
+  既定は原稿を実測して、足りていないところへ問いを向ける。
+  python main.py ask 第五稿.txt --survey            何が測られたかを見る
+  python main.py ask 第五稿.txt --lens 視点,熱量     観点を名指しする
+  python main.py ask 第五稿.txt --random-lenses     くじ引きに戻す
+
   --api には鍵が要る。console.anthropic.com で作って環境変数に置く。
     Windows: setx ANTHROPIC_API_KEY "自分の鍵"   (設定後に端末を開き直す)
     Colab:   import os; os.environ['ANTHROPIC_API_KEY'] = '自分の鍵'

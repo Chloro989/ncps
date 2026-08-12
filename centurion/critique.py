@@ -35,7 +35,8 @@ from .answer import annotate, find_quotes, report_quotes
 from .connect import (DREAM_WORK, MIN_CHARS, build_chain_prompt,
                       build_connection_prompt, distant_pairs, recurrences)
 from .manuscript import Manuscript
-from .review import build_prompt, check_citations, choose_lenses, resolve
+from .review import (LENS_BY_KEY, LENSES, build_prompt, check_citations,
+                     choose_lenses, describe, resolve, suggest_lenses)
 
 LOCAL_MODEL = "Qwen/Qwen2.5-3B-Instruct"
 API_MODEL = "claude-sonnet-5"
@@ -136,6 +137,29 @@ def pick_chunk(manuscript, size, number):
     return chunks, chunks[number - 1]
 
 
+def pick_lenses(chunk, args, rng):
+    """観点を決める。(観点の並び, どう決めたかの一言) を返す。
+
+    既定は原稿を測って選ぶ。名前の出てこない原稿には「固有」を、
+    出来事を語っていない原稿には「分岐」を向ける。
+    --lens で名指しすれば、測定を無視してそれを使う"""
+    if args.lens:
+        keys = [key.strip() for key in args.lens.replace("／", "/")
+                .replace("、", ",").replace("/", ",").split(",")
+                if key.strip()]
+        unknown = [key for key in keys if key not in LENS_BY_KEY]
+        if unknown:
+            raise SystemExit(
+                f"知らない観点: {'、'.join(unknown)}\n"
+                f"使えるのは: {'、'.join(l.key for l in LENSES)}")
+        return [LENS_BY_KEY[key] for key in keys], "指定"
+    if args.random_lenses:
+        return choose_lenses(rng, count=args.lenses), "くじ引き"
+    lenses, measured = suggest_lenses(chunk.paragraphs, count=args.lenses,
+                                      rng=rng)
+    return lenses, "実測 " + describe(measured)
+
+
 def compose(manuscript, args, chunk=None, nudge=0):
     """モードに応じて (指示, 本文, 見せた段落, 添える説明) を作る。
 
@@ -147,7 +171,7 @@ def compose(manuscript, args, chunk=None, nudge=0):
     if args.mode in ("発想", "査読"):
         chunks, picked = pick_chunk(manuscript, args.size, args.chunk)
         chunk = chunk or picked
-        lenses = choose_lenses(rng, count=args.lenses)
+        lenses, how = pick_lenses(chunk, args, rng)
         place = (f"{len(chunks)}つに分けたうちの"
                  f"{chunks.index(chunk) + 1}つ目、{chunk}")
         head, body = build_prompt(
@@ -156,7 +180,7 @@ def compose(manuscript, args, chunk=None, nudge=0):
         allowed = {p.index for p in chunk.paragraphs}
         return (head, body, allowed,
                 f"{chunks.index(chunk) + 1}/{len(chunks)}塊 "
-                f"観点: {'／'.join(l.key for l in lenses)}")
+                f"観点: {'／'.join(l.key for l in lenses)} ({how})")
 
     if args.mode == "接続":
         # 反復があればそれを優先する。作者がすでに植えた種のほうが確度が高い
@@ -206,6 +230,12 @@ def build_parser():
                         help="何番目の塊を読ませるか (既定 1つ目)")
     parser.add_argument("--lenses", type=int, default=3,
                         help="一度に渡す観点の数 (既定 3)")
+    parser.add_argument("--lens", metavar="視点,熱量",
+                        help="観点を名指しする。測定を無視してこれを使う")
+    parser.add_argument("--random-lenses", action="store_true",
+                        help="原稿を測らず、くじ引きで観点を選ぶ")
+    parser.add_argument("--survey", action="store_true",
+                        help="原稿の実測と、観点ごとの必要度を出す")
     parser.add_argument("--top", type=int, default=5,
                         help="接続モードで候補の上位いくつから選ぶか")
     parser.add_argument("--steps", type=int, default=4,
@@ -263,6 +293,34 @@ def show_list(manuscript, args):
         print(f"\n{kind} {len(rows)}件" + (" (上位12)" if len(rows) > 12 else ""))
         for item in rows[:12]:
             print("  " + str(item))
+
+
+def show_survey(manuscript, args):
+    """原稿の実測と、そこから出た観点の必要度を並べる。
+    なぜその観点が選ばれるのかを見えるようにするため"""
+    from .review import needs
+
+    _, chunk = pick_chunk(manuscript, args.size, args.chunk)
+    score, measured = needs(chunk.paragraphs)
+    print(f"{manuscript.title or '原稿'} / {chunk}")
+    print("\n実測")
+    labels = {
+        "名前": "名前のある人や場所を含む段落",
+        "会話": "会話文の段落",
+        "出来事": "過去の出来事を2文以上語る段落",
+        "感覚": "使われている感覚の種類",
+        "一人称": "一人称を含む段落",
+        "偏り": "段落の長さのばらつき",
+        "轍": "常套語(宇宙・神秘・永遠…)の濃さ",
+    }
+    for key, value in measured.items():
+        print(f"  {labels.get(key, key):<28} {value:>5.0%}")
+
+    print("\n観点の必要度 (高いほどこの原稿に効くと見込まれる)")
+    for lens in sorted(LENSES, key=lambda l: -score[l.key]):
+        print(f"  {score[lens.key]:>5.0%}  【{lens.key}】{lens.group}")
+    print("\n上から群を散らして選ぶ。"
+          "--lens 視点,熱量 で名指しすれば測定を無視する")
 
 
 def run_check(manuscript, args):
@@ -359,6 +417,9 @@ def main(argv=None):
         return run_check(manuscript, args)
     if args.list:
         show_list(manuscript, args)
+        return 0
+    if args.survey:
+        show_survey(manuscript, args)
         return 0
 
     jobs = tasks(manuscript, args)

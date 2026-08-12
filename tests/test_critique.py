@@ -115,6 +115,37 @@ except SystemExit:
     ok = True
 check("存在しない塊を指定したら止まる", ok)
 
+print("\n== 観点の決め方 ==")
+code, out = run(str(NOVEL), "--survey")
+check("実測を出す", code == 0 and "実測" in out)
+check("必要度を並べる", "観点の必要度" in out)
+check("観点を名指しできると伝える", "--lens" in out)
+
+code, out = run(str(NOVEL), "--lens", "視点,熱量", "--seed", "3")
+check("名指しした観点を使う",
+      "【視点】" in out and "【熱量】" in out)
+check("名指しなら数の指定より優先する", out.count("\n1. 【") == 1)
+code, out = run(str(NOVEL), "--lens", "視点／熱量")
+check("全角の区切りでも通る", "【視点】" in out and "【熱量】" in out)
+try:
+    run(str(NOVEL), "--lens", "無い観点")
+    rejected = False
+except SystemExit as stop:
+    rejected = "知らない観点" in str(stop)
+check("知らない観点は断る", rejected)
+
+def label_of(*extra):
+    """観点の決め方は説明文に残る。それを見て確かめる"""
+    args = critique.build_parser().parse_args([str(NOVEL), "--seed", "3"]
+                                              + list(extra))
+    return critique.tasks(Manuscript.load(NOVEL), args)[0][3]
+
+
+check("既定は実測で選ぶ", "実測" in label_of(), label_of())
+check("実測の中身も残す", "名前" in label_of())
+check("くじ引きに戻せる", "くじ引き" in label_of("--random-lenses"))
+check("名指しはそう記録する", "指定" in label_of("--lens", "視点,熱量"))
+
 print("\n== 全部の塊を読ませる ==")
 code, out = run(str(NOVEL), "--size", "600", "--all", "--seed", "5")
 check("塊の数だけ問いが並ぶ", out.count("\n---\n") == len(chunks),

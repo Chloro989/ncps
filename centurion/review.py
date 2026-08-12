@@ -30,8 +30,10 @@ Phase 8〜9 の実測では、抽象的な指示は効かず具体的な操作�
 ただしこの効果は3Bで測ったもので、強いモデルでは薄まる可能性がある。
 """
 
+import math
 import random
 import re
+import statistics
 from dataclasses import dataclass
 
 # 段落の指し方。モデルにはこの番号で答えさせ、実在するかを機械が検査する。
@@ -129,6 +131,125 @@ LENSES = [
 
 LENS_BY_KEY = {lens.key: lens for lens in LENSES}
 GROUPS = sorted({lens.group for lens in LENSES})
+
+
+# ===== 原稿を測って観点を選ぶ =====
+# 観点をくじ引きで選ぶと、その原稿に要らない問いが当たる。
+# 感覚描写で埋まった原稿に「感覚を足せ」と言っても意味がない。
+# 測れるものだけを測って、足りていないところへ問いを向ける。
+#
+# 測り方は実測112件の分析で使ったものと同じ。
+# 形態素解析は使わない — 依存を増やさずに済み、外れ方も読めるため
+
+# 名前らしきもの。敬称・地名の接尾辞と、長めのカタカナ語を拾う。
+# 形態素解析を使わないので、これは固有名詞の判定ではなく
+# 「名前を与えられた具体物」の粗い近似である。
+# カタカナは4文字以上に限る — エーマート・サイバーキューブは拾い、
+# コート・スマホのような短い一般語は落とすため。
+# それでもエンジニアやアパートは混じる。精度ではなく、
+# 原稿どうしを並べたときの順序が保てればよい
+NAME = re.compile(r"[一-龥]{1,3}(?:さん|くん|ちゃん|氏|先生|様)"
+                  r"|[一-龥]{2,4}(?:駅|町|村|市|川|山|橋|通り|坂|寺)"
+                  r"|[ァ-ヴ][ァ-ヴー]{3,}")
+FIRST_PERSON = re.compile(r"私|僕|俺|わたし|あたし")
+PAST_END = re.compile(r"(?:た|だ)[。！？]")
+SENSES = {
+    "音": "音|響|鳴|静か|囁|声が|轟|きしむ|ざわ",
+    "におい": "匂|臭|香",
+    "手触り": "触|手ざわり|ざらざら|つるつる|滑ら|硬|柔らか",
+    "温度": "冷た|温か|熱|寒|暖|ぬる",
+    "光": "光|明る|暗|眩|影|翳",
+}
+RUT = ("宇宙", "神秘", "深淵", "無限", "静寂", "星", "幻想", "生命",
+       "永遠", "彼方", "象徴", "囁く")
+
+
+def survey(paragraphs):
+    """観点を選ぶための実測。すべて0〜1に収める"""
+    texts = [p.text for p in paragraphs]
+    if not texts:
+        return {key: 0.5 for key in
+                ("名前", "会話", "出来事", "感覚", "一人称", "偏り", "轍")}
+    whole = "".join(texts)
+    lengths = [len(t) for t in texts]
+    # 段落の長さのばらつき(変動係数)。手持ちの4作で 0.81〜1.10 だったので、
+    # そのまま0〜1に切ると全部が上限に張り付いて観点を選べない。
+    # 観測した幅を0〜1に伸ばす。較正は4作ぶんしかない粗いもの
+    raw = (statistics.pstdev(lengths) / statistics.mean(lengths)
+           if len(lengths) > 1 and statistics.mean(lengths) else 0.0)
+    spread = min(max((raw - 0.7) / 0.6, 0.0), 1.0)
+    return {
+        "名前": sum(1 for t in texts if NAME.search(t)) / len(texts),
+        "会話": sum(1 for t in texts if t.startswith("「")) / len(texts),
+        "出来事": sum(1 for t in texts
+                    if len(PAST_END.findall(t)) >= 2) / len(texts),
+        "感覚": sum(1 for pattern in SENSES.values()
+                  if re.search(pattern, whole)) / len(SENSES),
+        "一人称": sum(1 for t in texts if FIRST_PERSON.search(t)) / len(texts),
+        "偏り": spread,
+        "轍": min(sum(whole.count(word) for word in RUT)
+                 / max(len(whole), 1) * 200, 1.0),
+    }
+
+
+# 各観点が、どの実測のどちら側で効くか。
+# 値が無い観点は 0.5 を返して、くじ引きの土俵には残す
+NEED = {
+    "固有": lambda s: 1 - s["名前"],          # 名前が無い原稿ほど効く
+    "感覚": lambda s: 1 - s["感覚"],
+    "分岐": lambda s: 1 - s["出来事"],        # 出来事を語っていないほど効く
+    "沈黙": lambda s: s["会話"],              # 会話が多いほど、言わなかったことが効く
+    "視点": lambda s: s["一人称"],
+    "信頼": lambda s: s["一人称"],
+    "時制": lambda s: s["出来事"],
+    "密度": lambda s: s["偏り"],
+    "熱量": lambda s: s["偏り"],
+    "既視": lambda s: s["轍"],
+    "安全": lambda s: s["轍"],
+    "約束事": lambda s: s["轍"],
+    "欠落": lambda s: 1 - s["感覚"],
+    "順序": lambda s: s["出来事"],
+    "一度きり": lambda s: 1 - s["名前"],
+}
+
+
+def needs(paragraphs):
+    """観点ごとの必要度。高いほどこの原稿に効くと見込まれる"""
+    measured = survey(paragraphs)
+    return ({lens.key: NEED.get(lens.key, lambda s: 0.5)(measured)
+             for lens in LENSES}, measured)
+
+
+def suggest_lenses(paragraphs, count=3, rng=None, jitter=0.15):
+    """原稿を測って観点を選ぶ。群は散らす。
+
+    jitter は同じ原稿でも回すたびに少し変わるようにするための揺らぎ。
+    必要度が拮抗している観点を毎回同じ順で出すと、
+    読み直しても同じ角度の指摘しか出てこない"""
+    rng = rng or random
+    score, measured = needs(paragraphs)
+    ranked = sorted(LENSES,
+                    key=lambda l: -(score[l.key] + rng.uniform(0, jitter)))
+
+    chosen, used = [], set()
+    for lens in ranked:                     # まず群ごとに一つずつ
+        if lens.group in used:
+            continue
+        chosen.append(lens)
+        used.add(lens.group)
+        if len(chosen) == count:
+            return chosen, measured
+    for lens in ranked:                     # 足りなければ順に詰める
+        if lens not in chosen:
+            chosen.append(lens)
+            if len(chosen) == count:
+                break
+    return chosen, measured
+
+
+def describe(measured):
+    """実測を一行で。なぜその観点が選ばれたかを見せるため"""
+    return " / ".join(f"{key}{value:.0%}" for key, value in measured.items())
 
 # 査読モード。note などで共有されている審査プロンプトと同じ思想。
 # 幻覚と忖度を防ぐための規則で固める

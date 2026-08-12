@@ -15,9 +15,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
 from centurion.manuscript import Manuscript
-from centurion.review import (GROUPS, IDEA_RULES, LENSES, REVIEW_RULES,
+from centurion.review import (GROUPS, IDEA_RULES, LENSES, NEED, REVIEW_RULES,
                               build_prompt, check_citations, choose_lenses,
-                              citations, number_paragraphs, resolve)
+                              citations, describe, needs, number_paragraphs,
+                              resolve, suggest_lenses, survey)
 
 FIXTURES = HERE / "fixtures"
 passed = failed = 0
@@ -72,6 +73,89 @@ check("求める数が多すぎても落ちない",
       len(choose_lenses(rng, count=99)) == len(LENSES))
 check("群を絞ったうえで数が多くても落ちない",
       len(choose_lenses(rng, count=99, groups=["熱量"])) == 2)
+
+print("\n== 原稿を測る ==")
+named = Manuscript("\n\n".join([
+    "　川口さんは大山町の坂を下りていった。冷たい風が吹いていた。",
+    "　佐藤くんが振り返った。遠くで鐘が鳴った。匂いがした。",
+    "　光が差した。硬い石畳に足を取られた。彼は転んだ。",
+]))
+nameless = Manuscript("\n\n".join([
+    "　彼は坂を下りていった。",
+    "　男が振り返った。",
+    "　誰かが何かを言った。",
+]))
+check("名前のある原稿は高く出る",
+      survey(named.paragraphs)["名前"] > survey(nameless.paragraphs)["名前"],
+      f"{survey(named.paragraphs)['名前']:.2f} 対 "
+      f"{survey(nameless.paragraphs)['名前']:.2f}")
+check("感覚が多い原稿は高く出る",
+      survey(named.paragraphs)["感覚"] > survey(nameless.paragraphs)["感覚"])
+check("すべて0〜1に収まる",
+      all(0 <= value <= 1 for value in survey(named.paragraphs).values()),
+      str(survey(named.paragraphs)))
+check("段落が無くても落ちない",
+      all(0 <= v <= 1 for v in survey([]).values()))
+
+talky = Manuscript("\n\n".join(["「行こう」", "「うん」", "「まだ早い」",
+                                "　彼は黙っていた。"]))
+check("会話文の割合を測る", survey(talky.paragraphs)["会話"] == 0.75,
+      str(survey(talky.paragraphs)["会話"]))
+
+events = Manuscript("\n\n".join([
+    "　雨が降った。傘をさした。歩き出した。",
+    "　風が吹いた。木が鳴った。空が暗くなった。",
+]))
+check("出来事を語る割合を測る",
+      survey(events.paragraphs)["出来事"] == 1.0)
+
+rutty = Manuscript("　宇宙の神秘は永遠の深淵に似ている。静寂が彼方に。")
+check("常套語の濃さを測る", survey(rutty.paragraphs)["轍"] > 0.5,
+      str(survey(rutty.paragraphs)["轍"]))
+check("常套語が無ければ0", survey(events.paragraphs)["轍"] == 0.0)
+
+print("\n== 必要度 ==")
+score, measured = needs(nameless.paragraphs)
+check("すべての観点に値が付く", set(score) == {l.key for l in LENSES})
+check("名前の無い原稿では固有が高い", score["固有"] > 0.7,
+      f"{score['固有']:.2f}")
+check("名前のある原稿では固有が下がる",
+      needs(named.paragraphs)[0]["固有"] < score["固有"])
+check("感覚の揃った原稿では感覚が下がる",
+      needs(named.paragraphs)[0]["感覚"] < needs(nameless.paragraphs)[0]["感覚"])
+check("常套語の多い原稿では既視が高い",
+      needs(rutty.paragraphs)[0]["既視"] > needs(events.paragraphs)[0]["既視"])
+check("値の無い観点は中央に置く",
+      needs(named.paragraphs)[0]["重心"] == 0.5)
+check("実測を一行で見せられる", "名前" in describe(measured))
+
+print("\n== 実測から観点を選ぶ ==")
+picked, measured = suggest_lenses(nameless.paragraphs, count=3,
+                                  rng=random.Random(1))
+check("指定した数だけ選ぶ", len(picked) == 3)
+check("群を散らす", len({l.group for l in picked}) == 3,
+      str([l.group for l in picked]))
+check("必要度の高いものが入る",
+      "固有" in {l.key for l in picked} or "分岐" in {l.key for l in picked},
+      str([l.key for l in picked]))
+check("実測も返す", "名前" in measured)
+check("同じ種なら同じ観点",
+      [l.key for l in suggest_lenses(nameless.paragraphs,
+                                     rng=random.Random(2))[0]]
+      == [l.key for l in suggest_lenses(nameless.paragraphs,
+                                        rng=random.Random(2))[0]])
+check("揺らぎがあるので毎回は同じでない",
+      len({tuple(l.key for l in suggest_lenses(nameless.paragraphs,
+                                               rng=random.Random(s))[0])
+           for s in range(20)}) > 1)
+check("原稿が違えば選ばれる観点も違う",
+      {l.key for l in suggest_lenses(named.paragraphs, count=4,
+                                     rng=random.Random(3), jitter=0)[0]}
+      != {l.key for l in suggest_lenses(nameless.paragraphs, count=4,
+                                        rng=random.Random(3), jitter=0)[0]})
+check("求める数が多すぎても落ちない",
+      len(suggest_lenses(named.paragraphs, count=99)[0]) == len(LENSES))
+check("段落が無くても落ちない", len(suggest_lenses([], count=2)[0]) == 2)
 
 print("\n== 本文の番号 ==")
 numbered = number_paragraphs(novel.paragraphs)
