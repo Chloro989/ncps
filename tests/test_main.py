@@ -52,8 +52,8 @@ check("知らない命令を名指しする", "foo" in err)
 check("案内も一緒に出す", "read" in out)
 
 print("\n== 命令の一覧 ==")
-check("五つある",
-      set(entry.COMMANDS) == {"read", "ask", "check", "write", "test"},
+check("六つある",
+      set(entry.COMMANDS) == {"read", "ask", "check", "web", "write", "test"},
       str(sorted(entry.COMMANDS)))
 check("試験の一覧が空でない", len(entry.TESTS) >= 5)
 check("試験の一覧が実在する",

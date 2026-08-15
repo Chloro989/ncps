@@ -1,0 +1,173 @@
+"""
+ブラウザから使うサーバの試験。
+
+    python tests/test_web.py
+
+モデルは呼ばない。確かめるのは配管と、外に出してはいけないもの —
+manuscripts/ の外を開かせないこと、本文をそのまま HTML に流さないこと、
+画面からの指定が CLI と同じ引数に化けること。
+"""
+
+import html
+import json
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+from urllib.parse import quote
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent))
+
+import centurion.web as web
+from centurion.manuscript import Manuscript
+
+PORT = 8799
+BASE = f"http://127.0.0.1:{PORT}"
+passed = failed = 0
+
+
+def check(name, condition, detail=""):
+    global passed, failed
+    if condition:
+        passed += 1
+        print(f"  ○ {name}")
+    else:
+        failed += 1
+        print(f"  × {name}" + (f" — {detail}" if detail else ""))
+
+
+def get(path):
+    with urllib.request.urlopen(BASE + path, timeout=30) as answer:
+        return answer.read().decode("utf-8")
+
+
+def post(path, body):
+    request = urllib.request.Request(
+        BASE + path, data=json.dumps(body).encode("utf-8"),
+        headers={"content-type": "application/json"})
+    with urllib.request.urlopen(request, timeout=60) as answer:
+        return json.loads(answer.read().decode("utf-8"))
+
+
+print("== 引数への組み替え ==")
+# 画面と端末で振る舞いがずれないよう、指定は CLI と同じ argv に組む
+argv = web.to_argv({"name": "あっちゃぐり.txt", "mode": "査読", "size": 3000,
+                    "chunk": 2, "lensmode": "named", "lens": "視点,熱量",
+                    "lenses": 2, "note": "狙い", "engine": "llama",
+                    "model": "LFM2.5"})
+check("モードが入る", "--mode" in argv and "査読" in argv)
+check("塊の指定が入る", argv[argv.index("--chunk") + 1] == "2")
+check("名指しした観点が入る", argv[argv.index("--lens") + 1] == "視点,熱量")
+check("補足が入る", argv[argv.index("--note") + 1] == "狙い")
+check("解かせ方が入る", "--llama" in argv)
+check("モデル名が入る", argv[argv.index("--model") + 1] == "LFM2.5")
+
+argv = web.to_argv({"name": "あっちゃぐり.txt", "lensmode": "random"})
+check("くじ引きを選べる", "--random-lenses" in argv)
+check("観点を名指ししなければ渡さない", "--lens" not in argv)
+argv = web.to_argv({"name": "あっちゃぐり.txt", "lensmode": "named", "lens": " "})
+check("空の名指しは渡さない", "--lens" not in argv)
+argv = web.to_argv({"name": "あっちゃぐり.txt", "engine": ""})
+check("解かせ方を選ばなければ何も付かない",
+      not {"--llama", "--api", "--run"} & set(argv))
+
+check("実際に CLI が受け取れる形になっている",
+      __import__("centurion.critique", fromlist=["x"])
+      .build_parser().parse_args(
+          web.to_argv({"name": "あっちゃぐり.txt", "mode": "接続",
+                       "engine": "api"})).mode == "接続")
+
+print("\n== 置き場の外を開かせない ==")
+for name in ("../README.md", "..\\README.md", "/etc/passwd",
+             "C:\\Windows\\win.ini", "無い原稿.txt"):
+    try:
+        web.resolve(name)
+        blocked = False
+    except (ValueError, OSError):
+        blocked = True
+    check(f"{name} を断る", blocked)
+
+check("置き場の説明書は原稿として出さない",
+      "README.md" not in web.listing(), str(web.listing()))
+check("原稿は出す", any(n.endswith(".txt") for n in web.listing()),
+      str(web.listing()))
+
+print("\n== 本文を HTML に流し込むとき ==")
+# 原稿は作者のもので、< や & が入りうる。そのまま流すと画面が壊れる
+risky = Manuscript("　彼は<b>と書いた。それから&nbsp;と続けた。\n\n"
+                   "　<script>alert(1)</script> という一行もある。")
+drawn = web.render(risky, "[0] は良い。", [("モード", "発想")])
+check("山括弧を逃がす", "&lt;b&gt;" in drawn, drawn[:120])
+check("素のタグを出さない", "<script>" not in drawn)
+check("アンパサンドを逃がす", "&amp;nbsp;" in drawn)
+check("記録が入る", "モード: 発想" in drawn)
+check("中身の無い記録は出さない",
+      "空:" not in web.render(risky, "", [("空", "")]))
+
+drawn = web.render(risky, "[9999] 「本文にどこにも無い一文である。」", risky
+                   and [("モード", "発想")])
+check("食い違う指摘に印が付く", web.MARK_BAD in drawn or "tip bad" in drawn,
+      drawn[-200:])
+
+drawn = web.render(risky, "", [("モード", "発想")], prompt="問いの本文")
+check("問いだけのときは問いを出す", "問いの本文" in drawn)
+check("そのときは貼り方を添える", "貼り" in drawn)
+
+print("\n== サーバを立てて叩く ==")
+threading.Thread(target=web.serve, args=(PORT, False), daemon=True).start()
+for _ in range(40):
+    try:
+        get("/api/manuscripts")
+        break
+    except Exception:
+        time.sleep(0.1)
+
+page = get("/")
+check("画面が返る", "センチュリオン" in page and "<html" in page)
+check("画面に依存の読み込みが無い", "http://" not in page.split("</style>")[0])
+
+names = json.loads(get("/api/manuscripts"))
+check("原稿の一覧が返る", isinstance(names, list) and names, str(names))
+
+data = json.loads(get(f"/api/manuscript?name={quote(names[0])}&size=6000"))
+check("原稿の姿が返る", "title" in data and "summary" in data)
+check("塊が返る", isinstance(data["chunks"], list) and data["chunks"])
+check("実測が返る", len(data["survey"]) >= 5)
+check("必要度が返る", len(data["needs"]) >= 10)
+check("必要度は高い順", data["needs"][0][1] >= data["needs"][-1][1])
+
+broken = json.loads(get("/api/manuscript?name=" + quote("../README.md")))
+check("置き場の外は断って理由を返す", "error" in broken, str(broken)[:80])
+
+answer = post("/api/ask", {"name": names[0], "mode": "発想", "size": 6000,
+                           "chunk": 1, "lensmode": "auto", "lenses": 3,
+                           "engine": ""})
+check("問いを組んで返す", "html" in answer, str(answer)[:120])
+check("発想モードの規則が入る",
+      "本文に無いものを述べてよい" in answer.get("html", ""))
+
+answer = post("/api/ask", {"name": names[0], "lensmode": "named",
+                           "lens": "無い観点", "engine": ""})
+check("知らない観点は理由を返す", "error" in answer, str(answer)[:80])
+
+# 手元で llama-server が動いていることがあるので、確実に閉じた口を指す
+answer = post("/api/ask", {"name": names[0], "engine": "llama",
+                           "lensmode": "auto",
+                           "llama_url": "http://127.0.0.1:1/v1/chat/completions"})
+check("llama-server が居なければ理由を返す",
+      "error" in answer and "llama-server" in answer["error"],
+      str(answer)[:120])
+check("そのとき画面を壊さない", "html" not in answer)
+
+try:
+    urllib.request.urlopen(BASE + "/" + quote("無い道"), timeout=10)
+    missing = False
+except urllib.error.HTTPError as problem:
+    missing = problem.code == 404
+check("知らない道は404", missing)
+
+print(f"\n{passed}件通過 / {failed}件失敗")
+raise SystemExit(1 if failed else 0)

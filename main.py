@@ -39,6 +39,7 @@ if str(HERE) not in sys.path:
 
 USAGE = """センチュリオン
 
+  web                  ブラウザから使う (127.0.0.1 にだけ開く)
   read   [原稿]        章・段落・切り出し・反復の一覧を見る
   ask    [原稿]        原稿を読ませる (--mode 発想/査読/接続/連想)
   check  答え [原稿]   答えの段落番号が実在するかを検査する
@@ -86,7 +87,8 @@ manuscripts/ に置いた原稿はファイル名だけで呼べる。
 """
 
 TESTS = ["test_centurion", "test_manuscript", "test_review",
-         "test_connect", "test_answer", "test_critique", "test_main"]
+         "test_connect", "test_answer", "test_critique", "test_web",
+         "test_main"]
 
 
 def cmd_read(rest):
@@ -113,6 +115,12 @@ def cmd_check(rest):
 def cmd_write(rest):
     from centurion.__main__ import main as write_main
     return write_main(rest)
+
+
+def cmd_web(rest):
+    """ブラウザから使う。127.0.0.1 にだけ開く"""
+    from centurion.web import main as web_main
+    return web_main(rest)
 
 
 def cmd_test(rest):
@@ -150,6 +158,7 @@ COMMANDS = {
     "read": cmd_read,
     "ask": cmd_ask,
     "check": cmd_check,
+    "web": cmd_web,
     "write": cmd_write,
     "test": cmd_test,
 }
