@@ -38,6 +38,7 @@ from .connect import (DREAM_WORK, MIN_CHARS, build_chain_prompt,
                       build_connection_prompt, distant_pairs, recurrences,
                       use_morphology)
 from .manuscript import Manuscript
+from . import verify
 from .review import (LENS_BY_KEY, LENSES, build_prompt, check_citations,
                      choose_lenses, describe, resolve, suggest_lenses)
 
@@ -345,6 +346,13 @@ def build_parser():
                         help=f"llama-server の窓口 (既定 {LLAMA_URL})")
     parser.add_argument("--all", action="store_true",
                         help="全部の塊を順に読ませる (発想・査読のみ)")
+    parser.add_argument("--verify", action="store_true",
+                        help="出てきた指摘を、もう一度モデルに検分させる。"
+                             "迷ったら捨てる側に立たせ、通ったものだけ残す")
+    parser.add_argument("--verify-with", choices=["api", "llama", "run"],
+                        help="検分を別の経路にやらせる (既定は同じ経路)")
+    parser.add_argument("--verify-model",
+                        help="検分に使うモデル (既定は同じモデル)")
     parser.add_argument("--model",
                         help=f"使うモデル (手元は {LOCAL_MODEL}、"
                              f"APIは {API_MODEL})")
@@ -494,6 +502,9 @@ def annotation_records(args, manuscript, labels=(), source=""):
         records.append(("検査した答え", Path(source).name))
     if labels:
         records.append(("読ませた範囲と観点", " / ".join(labels)))
+    if args.verify:
+        records.append(("検証", (args.verify_model or args.model or "同じモデル")
+                        + f" ({args.verify_with or '同じ経路'})"))
     records.append(("語の取り出し", args.words))
     return records
 
@@ -514,6 +525,38 @@ def tasks(manuscript, args):
     chunks, _ = pick_chunk(manuscript, args.size, None)
     return [compose(manuscript, args, chunk=chunk, nudge=index)
             for index, chunk in enumerate(chunks)]
+
+
+def verifier(args):
+    """検分する側を用意する。経路もモデルも変えられる —
+    同じモデルに自分の答えを検分させても、通しがちになる"""
+    if args.verify_with == "api" or (args.verify_with is None and args.api):
+        return Api(args.verify_model or args.model or API_MODEL), "API"
+    if args.verify_with == "llama" or (args.verify_with is None and args.llama):
+        return Llama(args.verify_model or "", args.llama_url), "llama.cpp"
+    return Local(args.verify_model or args.model or LOCAL_MODEL), "手元"
+
+
+def run_verify(args, manuscript, answer, body_text):
+    """指摘を検分にかけ、残ったものだけで答えを組み直す。
+    (組み直した答え, 経過の説明) を返す"""
+    findings = verify.split_findings(answer, manuscript)
+    if not findings:
+        return answer, "検証: 検分できる指摘が見当たらない"
+
+    solve, where = verifier(args)
+    head, body = verify.build_prompt(manuscript, findings, body_text,
+                                     title=manuscript.title)
+    judged = solve(head, body, args.tokens)
+    verdicts = verify.parse_verdicts(judged, findings)
+    kept, dropped, unjudged = verify.sift(findings, verdicts)
+    if not kept and not unjudged:
+        return answer, ("検証: すべて捨てられた。"
+                        "検分が働きすぎている疑いがあるので元の答えを残す\n"
+                        + verify.report(kept, dropped, unjudged))
+    return (verify.rebuild(kept, unjudged),
+            f"検証を {where} で行った\n"
+            + verify.report(kept, dropped, unjudged))
 
 
 def report(answer, manuscript, allowed):
@@ -596,6 +639,11 @@ def main(argv=None):
         if index:
             print("\n" + "=" * 64 + "\n")
         answer = solve(head, body, args.tokens)
+        if args.verify:
+            print("# 検分にかけています…", file=sys.stderr)
+            answer, how = run_verify(args, manuscript, answer, body)
+            for line in how.splitlines():
+                print("# " + line, file=sys.stderr)
         print(answer)
         report(answer, manuscript, allowed)
         collected.append((answer, label))

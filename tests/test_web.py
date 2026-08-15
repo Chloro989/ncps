@@ -21,6 +21,7 @@ from urllib.parse import quote
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
+import centurion.critique as critique
 import centurion.web as web
 from centurion.manuscript import Manuscript
 
@@ -270,6 +271,27 @@ check("実測の説明を返す", len(data["help"]) >= 6)
 check("測った項目に説明が付いている",
       set(data["help"]) >= {"名前", "会話", "出来事", "感覚", "轍"},
       str(sorted(data["help"])))
+
+print("\n== 検証 ==")
+for want, why in [('id="verify"', "検分の切り替えがある"),
+                  ("verify-with", "検分させる相手を選べる"),
+                  ("verify-model", "別のモデル名を渡せる"),
+                  ("疑う側に立たせ", "何をするのか説明する"),
+                  ("自分の答えを通しがち", "別のモデルを勧める理由を書く")]:
+    check(why, want in page, want)
+
+argv = web.to_argv({"name": "あっちゃぐり.txt", "verify": True,
+                    "verifyWith": "api", "verifyModel": "claude-opus-5"})
+check("検分の指定が引数に届く", "--verify" in argv)
+check("経路の指定が届く", argv[argv.index("--verify-with") + 1] == "api")
+check("モデルの指定が届く",
+      argv[argv.index("--verify-model") + 1] == "claude-opus-5")
+parsed = critique.build_parser().parse_args(argv)
+check("CLI が受け取れる形になっている",
+      parsed.verify and parsed.verify_with == "api"
+      and parsed.verify_model == "claude-opus-5")
+check("切っていれば付かない",
+      "--verify" not in web.to_argv({"name": "あっちゃぐり.txt"}))
 
 print("\n== 語の取り出し方 ==")
 argv = web.to_argv({"name": "あっちゃぐり.txt", "words": "形態素"})

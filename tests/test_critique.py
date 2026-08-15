@@ -274,6 +274,89 @@ check("外の答えならモードは申告扱い", "(申告)" in checked["モ�
 check("範囲が分からなければその欄を出さない",
       "読ませた範囲と観点" not in checked)
 
+print("\n== 検分にかける ==")
+manuscript = Manuscript.load(NOVEL)
+ANSWER = ("- [0] の灯りは伏線になっていない。二度目を置くべきだ。\n"
+          "- [1] と [3] の水は繋がるはずだが書かれていない。\n"
+          "- [2] はもっと丁寧に書くとよい。\n")
+
+
+class FakeJudge:
+    def __init__(self, verdict):
+        self.verdict = verdict
+        self.asked = None
+
+    def __call__(self, head, body, max_tokens=0):
+        self.asked = (head, body)
+        return self.verdict
+
+
+def verify_with(verdict, *extra):
+    args = critique.build_parser().parse_args(
+        [str(NOVEL), "--verify", "--llama"] + list(extra))
+    judge = FakeJudge(verdict)
+    real = critique.verifier
+    critique.verifier = lambda a: (judge, "試験")
+    try:
+        return critique.run_verify(args, manuscript, ANSWER, "本文"), judge
+    finally:
+        critique.verifier = real
+
+
+(answer, how), judge = verify_with(
+    "1: 残す 具体的\n2: 捨てる 本文に無い\n3: 捨てる 曖昧")
+check("残った指摘だけになる", "灯りは伏線" in answer)
+check("捨てた指摘は消える", "もっと丁寧に" not in answer)
+check("経過を伝える", "1件を残し、2件を捨てた" in how, how[:60])
+check("捨てた理由も出す", "本文に無い" in how)
+check("本文を検分側にも渡す", "本文" in judge.asked[1])
+check("疑う側に立たせている", "粗を探す側" in judge.asked[0])
+
+(answer, how), _ = verify_with("1: 捨てる\n2: 捨てる\n3: 捨てる")
+check("すべて捨てられたら元の答えを残す", "もっと丁寧に" in answer)
+check("そのとき理由を述べる", "働きすぎている" in how, how[:60])
+
+(answer, how), _ = verify_with("読めない返事")
+check("判定が読めなければ指摘を残す", "灯りは伏線" in answer)
+check("判定されなかったと印を付ける", "判定されなかった" in answer)
+
+(answer, how), _ = verify_with("1: 残す よい", "--verify-model", "別のモデル")
+args = critique.build_parser().parse_args(
+    [str(NOVEL), "--verify", "--llama", "--verify-model", "別のモデル"])
+check("検証に使ったモデルを記録に残す",
+      "別のモデル" in dict(critique.annotation_records(
+          args, manuscript, ["x"]))["検証"])
+check("検証していなければ記録に出さない",
+      "検証" not in dict(critique.annotation_records(
+          critique.build_parser().parse_args([str(NOVEL)]), manuscript, ["x"])))
+
+print("\n== 検分する側の選び方 ==")
+
+
+def judge_kind(*extra):
+    args = critique.build_parser().parse_args([str(NOVEL), "--verify"]
+                                              + list(extra))
+    return critique.verifier(args)[1]
+
+
+saved_key = os.environ.get("ANTHROPIC_API_KEY")
+os.environ["ANTHROPIC_API_KEY"] = "試験用の偽の鍵"
+try:
+    check("既定は同じ経路 (API)", judge_kind("--api") == "API")
+    check("既定は同じ経路 (llama)", judge_kind("--llama") == "llama.cpp")
+    check("経路を変えられる",
+          judge_kind("--llama", "--verify-with", "api") == "API")
+    check("検分に別のモデルを渡せる",
+          critique.verifier(critique.build_parser().parse_args(
+              [str(NOVEL), "--verify", "--api",
+               "--verify-model", "claude-opus-5"]))[0].model
+          == "claude-opus-5")
+finally:
+    if saved_key is None:
+        os.environ.pop("ANTHROPIC_API_KEY", None)
+    else:
+        os.environ["ANTHROPIC_API_KEY"] = saved_key
+
 print("\n== 段落番号の検査 ==")
 with TemporaryDirectory() as folder:
     answer = Path(folder) / "answer.txt"

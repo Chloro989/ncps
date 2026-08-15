@@ -196,6 +196,22 @@ PAGE = """<!doctype html>
     <select id="model-pick" onchange="$('model').value=this.value"></select>
     <input id="model" placeholder="モデル名を直に書く" size="26"></label>
   </fieldset>
+  <fieldset><legend>検証 (出てきた指摘をもう一度検分させる)</legend>
+    <label><input type="checkbox" id="verify"> 検分にかける
+      <span class="note">疑う側に立たせ、通った指摘だけを残す。
+      時間と費用は倍になる</span></label>
+    <label>検分させる相手
+      <select id="verify-with">
+        <option value="">同じ経路・同じモデル</option>
+        <option value="llama">llama.cpp</option>
+        <option value="api">Claude の API</option>
+        <option value="run">transformers</option>
+      </select>
+      <input id="verify-model" placeholder="別のモデル名 (任意)" size="24">
+    </label>
+    <p class="note">別のモデルに検分させたほうが効く。
+      同じモデルは自分の答えを通しがちになる。</p>
+  </fieldset>
   <button class="go" id="go" onclick="ask()">実行</button>
   <button id="save" class="hide" onclick="saveAnnotated()">添削を保存</button>
   <span id="busy" class="note"></span>
@@ -358,7 +374,8 @@ function askBody() {
     chunk: +$("chunk").value, lensmode: $("lensmode").value,
     lens: $("lens").value, lenses: +$("lenses").value, note: $("note").value,
     words: $("words").value, engine: $("engine").value,
-    model: $("model").value};
+    model: $("model").value, verify: $("verify").checked,
+    verifyWith: $("verify-with").value, verifyModel: $("verify-model").value};
 }
 
 async function saveAnnotated() {
@@ -513,15 +530,23 @@ def to_argv(body, path=None):
         argv.append(f"--{engine}")
     if body.get("llama_url", "").strip():
         argv += ["--llama-url", body["llama_url"].strip()]
+    if body.get("verify"):
+        argv.append("--verify")
+        if body.get("verifyWith") in ("api", "llama", "run"):
+            argv += ["--verify-with", body["verifyWith"]]
+        if body.get("verifyModel", "").strip():
+            argv += ["--verify-model", body["verifyModel"].strip()]
     return argv
 
 
-def render(manuscript, answer, records, prompt=None):
+def render(manuscript, answer, records, prompt=None, verified=""):
     """答えを画面用の HTML にする。
     本文は作者のもので、< や & が入りうるので必ず逃がす"""
     parts = ["<div class='head'>"
              + "\n".join(f"{name}: {value}" for name, value in records
                          if value) + "</div>"]
+    if verified:
+        parts.append(f"<div class='head'>{html.escape(verified)}</div>")
     if prompt is not None:
         parts.append("<p class='note'>これを好きなチャットに貼り、"
                      "答えを保存してから <code>check</code> にかけてください。</p>")
@@ -660,8 +685,12 @@ def run_ask(body):
                                prompt=head + "\n\n---\n\n" + prompt_body)}
 
     answer = solver_for(args)(head, prompt_body, args.tokens)
+    note = ""
+    if args.verify:
+        answer, note = critique.run_verify(args, manuscript, answer,
+                                           prompt_body)
     records = critique.annotation_records(args, manuscript, [label])
-    return {"html": render(manuscript, answer, records),
+    return {"html": render(manuscript, answer, records, verified=note),
             "answer": answer, "label": label}
 
 
