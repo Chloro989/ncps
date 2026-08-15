@@ -335,9 +335,16 @@ check("読めなかったものは印を付けて残す", "判定されなかっ
 (answer, how), _ = verify_with("1: 残す よい", "--verify-model", "別のモデル")
 args = critique.build_parser().parse_args(
     [str(NOVEL), "--verify", "--llama", "--verify-model", "別のモデル"])
-check("検証に使ったモデルを記録に残す",
+check("検分がまだなら未実行と書く",
+      dict(critique.annotation_records(args, manuscript, ["x"]))["検証"]
+      == "未実行")
+args.verify_where = "llama.cpp http://例:8081 / 別のモデル"
+check("検分した相手を記録に残す",
       "別のモデル" in dict(critique.annotation_records(
-          args, manuscript, ["x"]))["検証"])
+          args, manuscript, ["x"], outcome="2件を残し、1件を捨てた"))["検証"])
+check("何件残したかも記録に残す",
+      "2件を残し" in dict(critique.annotation_records(
+          args, manuscript, ["x"], outcome="2件を残し、1件を捨てた"))["検証"])
 check("検証していなければ記録に出さない",
       "検証" not in dict(critique.annotation_records(
           critique.build_parser().parse_args([str(NOVEL)]), manuscript, ["x"])))
@@ -354,15 +361,33 @@ def judge_kind(*extra):
 saved_key = os.environ.get("ANTHROPIC_API_KEY")
 os.environ["ANTHROPIC_API_KEY"] = "試験用の偽の鍵"
 try:
-    check("既定は同じ経路 (API)", judge_kind("--api") == "API")
-    check("既定は同じ経路 (llama)", judge_kind("--llama") == "llama.cpp")
+    check("既定は同じ経路 (API)", "API" in judge_kind("--api"))
+    check("既定は同じ経路 (llama)", "llama.cpp" in judge_kind("--llama"))
     check("経路を変えられる",
-          judge_kind("--llama", "--verify-with", "api") == "API")
+          "API" in judge_kind("--llama", "--verify-with", "api"))
     check("検分に別のモデルを渡せる",
           critique.verifier(critique.build_parser().parse_args(
               [str(NOVEL), "--verify", "--api",
                "--verify-model", "claude-opus-5"]))[0].model
           == "claude-opus-5")
+
+    # llama-server は起動時に読み込んだモデル1つだけを配る。
+    # --verify-model に別の名前を書いてもサーバは無視するので、
+    # 同じ窓口を指している限り検分するのは同じモデルになる。
+    # 以前はそれを「検証: Qwen (llama)」と記録していて、事実と違っていた
+    same = judge_kind("--llama", "--verify-model", "Qwen2.5-3B")
+    check("同じ窓口なら同じモデルだと記録する", "書いた側と同じ" in same, same)
+    check("そのとき別のモデル名を書かない", "Qwen2.5-3B" not in same, same)
+
+    other = judge_kind("--llama", "--verify-llama-url",
+                       "http://127.0.0.1:8081/v1/chat/completions")
+    check("別の窓口なら同じとは書かない", "書いた側と同じ" not in other, other)
+    check("どの窓口かを記録する", "8081" in other, other)
+
+    caller, _ = critique.verifier(critique.build_parser().parse_args(
+        [str(NOVEL), "--verify", "--llama",
+         "--verify-llama-url", "http://127.0.0.1:8081/v1/chat/completions"]))
+    check("別の窓口へ実際に繋ぎに行く", "8081" in caller.url, caller.url)
 finally:
     if saved_key is None:
         os.environ.pop("ANTHROPIC_API_KEY", None)

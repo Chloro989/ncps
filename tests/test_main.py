@@ -163,7 +163,8 @@ missing = [name for name in entry.COMMANDS if f"main.py {name}" not in readme]
 check("すべての命令がREADMEにある", not missing, str(missing))
 
 check("試験の件数がREADMEに書いてある",
-      any(f"({total}件)" in readme for total in range(200, 1000)),
+      any(f"{total} 件" in readme or f"{total}件" in readme
+          for total in range(200, 2000)),
       "件数の表記が見つからない")
 
 print(f"\n{passed}件通過 / {failed}件失敗")

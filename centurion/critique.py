@@ -370,6 +370,10 @@ def build_parser():
                         help="検分を別の経路にやらせる (既定は同じ経路)")
     parser.add_argument("--verify-model",
                         help="検分に使うモデル (既定は同じモデル)")
+    parser.add_argument("--verify-llama-url",
+                        help="検分させる llama-server の窓口。"
+                             "別のモデルに検分させるには、別のポートで"
+                             "もう一つサーバを立ててここを指す")
     parser.add_argument("--model",
                         help=f"使うモデル (手元は {LOCAL_MODEL}、"
                              f"APIは {API_MODEL})")
@@ -521,11 +525,11 @@ def annotation_records(args, manuscript, labels=(), source="", outcome=""):
     if labels:
         records.append(("読ませた範囲と観点", " / ".join(labels)))
     if args.verify:
-        # 誰に検分させたかだけでなく、何件残って何件捨てられたかまで残す。
-        # 「検証: Qwen」とだけ書いてあっても、検分が働いたのか
-        # 素通りしたのかが後から分からない
-        records.append(("検証", (args.verify_model or args.model or "同じモデル")
-                        + f" ({args.verify_with or '同じ経路'})"
+        # 何に検分させたかは verifier() が決める。ここで --verify-model を
+        # そのまま書くと、llama.cpp では嘘になる (サーバは名前を無視するため)。
+        # 何件残って何件捨てられたかまで残す — 誰が検分したかだけでは、
+        # 働いたのか素通りしたのかが後から分からない
+        records.append(("検証", getattr(args, "verify_where", "未実行")
                         + (f" — {outcome}" if outcome else "")))
     records.append(("語の取り出し", args.words))
     return records
@@ -550,13 +554,49 @@ def tasks(manuscript, args):
 
 
 def verifier(args):
-    """検分する側を用意する。経路もモデルも変えられる —
-    同じモデルに自分の答えを検分させても、通しがちになる"""
+    """検分する側を用意する。(解き手, 記録に残す説明) を返す。
+
+    llama.cpp は起動時に読み込んだモデル1つだけを配る。--model / --verify-model
+    はサーバに送られるが無視される。つまり同じ窓口を指している限り、
+    --verify-model に別の名前を書いても**検分するのは同じモデル**である。
+    以前はそれを「検証: Qwen (llama)」と記録していて、事実と違っていた。
+
+    別のモデルに検分させるには、別のポートでもう一つ llama-server を立て、
+    --verify-llama-url でそちらを指すこと"""
     if args.verify_with == "api" or (args.verify_with is None and args.api):
-        return Api(args.verify_model or args.model or API_MODEL), "API"
+        model = args.verify_model or args.model or API_MODEL
+        return Api(model), f"{model} (API)"
     if args.verify_with == "llama" or (args.verify_with is None and args.llama):
-        return Llama(args.verify_model or "", args.llama_url), "llama.cpp"
-    return Local(args.verify_model or args.model or LOCAL_MODEL), "手元"
+        url = args.verify_llama_url or args.llama_url
+        same = url == args.llama_url and args.llama
+        if same:
+            where = f"llama.cpp {url} に載っているモデル (書いた側と同じ)"
+        else:
+            where = f"llama.cpp {url}" + (f" / {args.verify_model}"
+                                          if args.verify_model else "")
+        return Llama(args.verify_model or "", url), where
+    model = args.verify_model or args.model or LOCAL_MODEL
+    return Local(model), f"{model} (手元)"
+
+
+def warn_same_judge(args):
+    """書いた側と検分する側が同じモデルになっていたら言う。
+    同じモデルは自分の答えを通しがちで、検証にならない"""
+    if not args.verify or not args.llama:
+        return
+    if args.verify_with not in (None, "llama"):
+        return
+    if (args.verify_llama_url or args.llama_url) != args.llama_url:
+        return
+    message = ("# 注意: 検分するのも同じ llama-server、"
+               "つまり書いた側と同じモデルになる。"
+               "自分の答えは通しがちなので検証になりにくい")
+    if args.verify_model:
+        message += (f"\n#   --verify-model {args.verify_model} は"
+                    "サーバに無視される。載っているモデルは起動時に決まっている")
+    message += ("\n#   別のモデルに検分させるには、別のポートでもう一つ"
+                "サーバを立てて --verify-llama-url で指すこと")
+    print(message, file=sys.stderr)
 
 
 def run_verify(args, manuscript, answer, body_text):
@@ -567,6 +607,7 @@ def run_verify(args, manuscript, answer, body_text):
         return answer, "検証: 検分できる指摘が見当たらない"
 
     solve, where = verifier(args)
+    args.verify_where = where          # 記録に残すために控える
     head, body = verify.build_prompt(manuscript, findings, body_text,
                                      title=manuscript.title)
     judged = solve(head, body, args.tokens)
@@ -654,6 +695,7 @@ def main(argv=None):
         return 0
     if args.mode in ("発想", "査読") and not args.lens:
         warn_lenses(args.lenses)
+    warn_same_judge(args)
 
     jobs = tasks(manuscript, args)
 
