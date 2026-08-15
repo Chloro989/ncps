@@ -169,5 +169,81 @@ except urllib.error.HTTPError as problem:
     missing = problem.code == 404
 check("知らない道は404", missing)
 
+print("\n== 貼り付けた本文 ==")
+# その場で試したいときに、いちいちファイルへ保存させるのは手間が多い
+PASTED = "　雨が降った。傘をさした。\n\n　彼は黙っていた。遠くで鐘が鳴った。"
+data = post("/api/manuscript", {"text": PASTED, "size": 6000})
+check("貼り付けから姿を読める", data.get("summary", "").startswith("32文字"),
+      str(data)[:90])
+check("貼り付けと分かる題が付く", data["title"] == "貼り付けた原稿")
+check("段落に分かれる", "2段落" in data["summary"])
+
+data = post("/api/ask", {"text": PASTED, "engine": "", "lensmode": "auto",
+                         "chunk": 1, "size": 6000})
+check("貼り付けから問いを組める", "html" in data, str(data)[:90])
+check("貼り付けた本文が問いに入る", "雨が降った" in data["html"])
+
+data = post("/api/manuscript", {"text": "   ", "name": "無い原稿.txt"})
+check("貼り付けが空なら置き場を見に行く", "error" in data, str(data)[:70])
+
+print("\n== モデルの一覧 ==")
+data = json.loads(get("/api/models"))
+check("解かせ方ごとに一覧が返る",
+      set(data["models"]) == {"api", "llama", "run"}, str(list(data["models"])))
+check("どれも空でない", all(data["models"].values()))
+check("APIの一覧は claude で始まる",
+      all(m.startswith("claude") for m in data["models"]["api"]))
+check("人格も返る", "センチュリオン" in data["persona"])
+
+print("\n== チャット ==")
+data = post("/api/chat", {"messages": [], "engine": "llama"})
+check("何も書かれていなければ断る", "error" in data, str(data)[:70])
+
+data = post("/api/chat", {
+    "messages": [{"role": "user", "content": "こんにちは"}],
+    "engine": "llama", "model": "試験",
+    "llama_url": "http://127.0.0.1:1/v1/chat/completions"})
+check("届かなければ理由を返す", "error" in data, str(data)[:70])
+
+# 何がモデルへ渡るかを、偽の解き手で受け止めて確かめる
+sent = {}
+
+
+class Fake:
+    def chat(self, messages, max_tokens=0):
+        sent["messages"] = messages
+        return "答えました"
+
+
+real = web.solver_for
+web.solver_for = lambda args: Fake()
+try:
+    out = web.run_chat({"messages": [{"role": "user", "content": "一つ目"},
+                                     {"role": "assistant", "content": "はい"},
+                                     {"role": "user", "content": "二つ目"}],
+                        "system": "あなたはセンチュリオン。", "engine": "llama"})
+    check("答えを返す", out == {"reply": "答えました"}, str(out))
+    check("人格を先頭に置く", sent["messages"][0]["role"] == "system")
+    check("人格の中身が入る",
+          sent["messages"][0]["content"] == "あなたはセンチュリオン。")
+    check("これまでのやり取りを全部渡す",
+          [m["content"] for m in sent["messages"][1:]]
+          == ["一つ目", "はい", "二つ目"])
+
+    web.run_chat({"messages": [{"role": "user", "content": "素のまま"}],
+                  "system": "  ", "engine": "llama"})
+    check("人格が空なら入れない",
+          all(m["role"] != "system" for m in sent["messages"]))
+
+    web.run_chat({"messages": [{"role": "user", "content": "ふつう"},
+                               {"role": "変な役", "content": "混ぜもの"},
+                               {"role": "user", "content": ""}],
+                  "engine": "llama"})
+    check("知らない役と空の発言は落とす",
+          [m["content"] for m in sent["messages"]] == ["ふつう"],
+          str(sent["messages"]))
+finally:
+    web.solver_for = real
+
 print(f"\n{passed}件通過 / {failed}件失敗")
 raise SystemExit(1 if failed else 0)

@@ -56,6 +56,17 @@ API_VERSION = "2023-06-01"
 # 小説を書かせる側の抑圧(type5設定)は使えない。
 # ただし論評では抑圧を使っていないため、こちらは問題にならない
 LLAMA_URL = "http://127.0.0.1:8080/v1/chat/completions"
+
+# 画面の選択肢に出す名前。ここに無いものも自由に打ち込めるので、
+# 一覧は「よく使うものの近道」であって制限ではない。
+# llama.cpp の欄は記録用の名札で、実際に何が載っているかはサーバ側で決まる
+KNOWN_MODELS = {
+    "api": ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
+    "llama": ["LFM2.5-1.2B-JP-202606", "LFM2.5-2.6B", "LFM2-8B-A1B",
+              "Qwen2.5-3B-Instruct"],
+    "run": ["Qwen/Qwen2.5-3B-Instruct", "LiquidAI/LFM2-1.2B",
+            "LiquidAI/LFM2-2.6B", "Qwen/Qwen2.5-7B-Instruct"],
+}
 MAX_TOKENS = 4000          # 論評は長い。小説生成の150では話にならない
 CHUNK_SIZE = 6000
 MODES = ["発想", "査読", "接続", "連想"]
@@ -80,10 +91,12 @@ class Local:
         ).to(self.device).eval()
 
     def __call__(self, head, body, max_tokens=MAX_TOKENS):
+        return self.chat([{"role": "system", "content": head},
+                          {"role": "user", "content": body}], max_tokens)
+
+    def chat(self, messages, max_tokens=MAX_TOKENS):
         prefix = self.tokenizer.apply_chat_template(
-            [{"role": "system", "content": head},
-             {"role": "user", "content": body}],
-            tokenize=False, add_generation_prompt=True)
+            messages, tokenize=False, add_generation_prompt=True)
         inputs = self.tokenizer(prefix, return_tensors="pt").to(self.device)
         with self.torch.no_grad():
             output = self.model.generate(
@@ -109,12 +122,15 @@ class Llama:
         self.url = url
 
     def __call__(self, head, body, max_tokens=MAX_TOKENS):
+        return self.chat([{"role": "system", "content": head},
+                          {"role": "user", "content": body}], max_tokens)
+
+    def chat(self, messages, max_tokens=MAX_TOKENS):
         payload = json.dumps({
             "model": self.model,
             "max_tokens": max_tokens,
             "temperature": 0.7,
-            "messages": [{"role": "system", "content": head},
-                         {"role": "user", "content": body}],
+            "messages": messages,
         }).encode("utf-8")
         request = urllib.request.Request(
             self.url, data=payload,
@@ -158,11 +174,20 @@ class Api:
                 "この道具は鍵を保存も表示もしない。")
 
     def __call__(self, head, body, max_tokens=MAX_TOKENS):
+        return self.chat([{"role": "system", "content": head},
+                          {"role": "user", "content": body}], max_tokens)
+
+    def chat(self, messages, max_tokens=MAX_TOKENS):
+        """この窓口は system を messages の外に置く形なので、
+        先頭の system だけ取り分ける"""
+        head = "".join(m["content"] for m in messages
+                       if m["role"] == "system")
+        rest = [m for m in messages if m["role"] != "system"]
         payload = json.dumps({
             "model": self.model,
             "max_tokens": max_tokens,
             "system": head,
-            "messages": [{"role": "user", "content": body}],
+            "messages": rest,
         }).encode("utf-8")
         request = urllib.request.Request(API_URL, data=payload, headers={
             "x-api-key": self.key,

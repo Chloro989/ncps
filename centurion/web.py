@@ -37,7 +37,8 @@ from . import critique
 from .answer import MARK_BAD, MARK_OK, annotate, attach, find_quotes
 from .connect import recurrences
 from .manuscript import MANUSCRIPTS, Manuscript
-from .review import LENSES, describe, needs
+from .prompts import build_fluid
+from .review import needs
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -45,52 +46,83 @@ SUFFIXES = {".txt", ".md"}
 
 PAGE = """<!doctype html>
 <html lang="ja"><head><meta charset="utf-8">
-<title>センチュリオン</title>
+<title>centurion</title>
 <style>
- :root { color-scheme: light dark; }
+ :root { color-scheme: light dark; --line:#8884; --accent:#4a9; --bad:#d55; }
  body { font-family: "Yu Gothic UI", "Hiragino Sans", system-ui, sans-serif;
         margin: 0; line-height: 1.75; }
- header { padding: 12px 20px; border-bottom: 1px solid #8884;
-          display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
- h1 { font-size: 15px; margin: 0 12px 0 0; font-weight: 600; }
- main { display: grid; grid-template-columns: 300px 1fr; min-height: 90vh; }
- aside { padding: 16px 20px; border-right: 1px solid #8884; font-size: 13px; }
+ header { padding: 10px 20px; border-bottom: 1px solid var(--line);
+          display: flex; gap: 18px; align-items: baseline; flex-wrap: wrap; }
+ /* 外の字を読みに行かないよう、手元にある筆記体だけを並べる */
+ .mark { font-family: "Segoe Script", "Brush Script MT", "Lucida Handwriting",
+                      "Apple Chancery", "URW Chancery L", cursive;
+         font-size: 30px; font-style: italic; letter-spacing: .5px;
+         margin: 0; line-height: 1; }
+ .mark .c { font-size: 38px; }
+ nav { display: flex; gap: 4px; }
+ nav button { border: 1px solid transparent; border-bottom: none;
+              border-radius: 7px 7px 0 0; padding: 6px 18px; opacity: .6; }
+ nav button.on { border-color: var(--line); opacity: 1; font-weight: 600; }
+ main { display: grid; grid-template-columns: 300px 1fr; min-height: 88vh; }
+ main.wide { grid-template-columns: 1fr; }
+ aside { padding: 16px 20px; border-right: 1px solid var(--line); font-size: 13px; }
  section { padding: 16px 28px; }
- fieldset { border: 1px solid #8884; border-radius: 6px; margin: 0 0 14px;
+ fieldset { border: 1px solid var(--line); border-radius: 6px; margin: 0 0 14px;
             padding: 10px 12px; }
  legend { font-size: 12px; opacity: .75; padding: 0 4px; }
- label { display: block; margin: 4px 0; font-size: 13px; }
- select, input, button { font: inherit; padding: 4px 8px; border-radius: 5px;
-                         border: 1px solid #8886; background: transparent;
-                         color: inherit; }
+ label { display: block; margin: 5px 0; font-size: 13px; }
+ select, input, button, textarea {
+   font: inherit; padding: 4px 8px; border-radius: 5px;
+   border: 1px solid #8886; background: transparent; color: inherit; }
+ textarea { width: 100%; box-sizing: border-box; resize: vertical;
+            font-size: 13px; line-height: 1.7; }
  button { cursor: pointer; }
- button.go { padding: 7px 18px; font-weight: 600; }
+ button.go { padding: 7px 20px; font-weight: 600; }
  button.go:disabled { opacity: .5; cursor: progress; }
  .note { font-size: 12px; opacity: .7; }
  .para { margin: 0 0 4px; }
  .num { opacity: .45; font-size: 11px; margin-right: 6px;
         font-variant-numeric: tabular-nums; }
  .tip { margin: 2px 0 10px 22px; padding: 5px 10px; font-size: 13px;
-        border-left: 3px solid #4a9; background: #4a91; border-radius: 0 4px 4px 0; }
- .tip.bad { border-left-color: #d55; background: #d551; }
+        border-left: 3px solid var(--accent); background: #4a91;
+        border-radius: 0 4px 4px 0; }
+ .tip.bad { border-left-color: var(--bad); background: #d551; }
  .head { white-space: pre-wrap; font-size: 12px; opacity: .8;
-         border: 1px solid #8884; border-radius: 6px; padding: 8px 12px;
+         border: 1px solid var(--line); border-radius: 6px; padding: 8px 12px;
          margin-bottom: 16px; }
  pre.prompt { white-space: pre-wrap; font-size: 12px; background: #8881;
               padding: 12px; border-radius: 6px; }
  .item { margin: 3px 0; font-size: 12px; }
- .bar { display: inline-block; height: 7px; background: #4a9; border-radius: 3px;
-        vertical-align: middle; margin-right: 5px; }
+ .bar { display: inline-block; height: 7px; background: var(--accent);
+        border-radius: 3px; vertical-align: middle; margin-right: 5px; }
+ .turn { margin: 0 0 14px; padding: 9px 14px; border-radius: 8px;
+         white-space: pre-wrap; }
+ .turn.me { background: #4a91; margin-left: 15%; }
+ .turn.it { background: #8881; margin-right: 15%; }
+ .who { font-size: 11px; opacity: .6; display: block; margin-bottom: 3px; }
+ .hide { display: none; }
 </style></head><body>
 <header>
-  <h1>センチュリオン</h1>
-  <select id="doc"></select>
-  <button onclick="load()">読む</button>
+  <p class="mark"><span class="c">c</span>enturion</p>
+  <nav>
+    <button id="tab-work" class="on" onclick="show('work')">添削</button>
+    <button id="tab-talk" onclick="show('talk')">チャット</button>
+  </nav>
   <span id="state" class="note"></span>
 </header>
-<main>
-<aside id="side" class="note">原稿を選んで「読む」を押す</aside>
+
+<main id="pane-work">
+<aside id="side" class="note">原稿を選ぶか、貼り付けて「読む」を押す</aside>
 <section>
+  <fieldset><legend>原稿</legend>
+    <label>置き場から
+      <select id="doc"></select>
+      <button onclick="load()">読む</button>
+    </label>
+    <label>または、ここに貼り付ける (貼ってあればこちらを使う)
+      <textarea id="pasted" rows="4"
+        placeholder="原稿をそのまま貼り付けて「読む」"></textarea></label>
+  </fieldset>
   <fieldset><legend>何を訊くか</legend>
     <label>モード
       <select id="mode">
@@ -115,81 +147,162 @@ PAGE = """<!doctype html>
       <input id="note" placeholder="狙いや訊きたいこと" size="42"></label>
   </fieldset>
   <fieldset><legend>誰に解かせるか</legend>
-    <label><select id="engine">
+    <label><select id="engine" onchange="fillModels('engine','model')">
       <option value="">問いを出すだけ (貼って使う)</option>
       <option value="llama">llama.cpp (手元・AMDでも動く)</option>
       <option value="api">Claude の API (鍵が要る)</option>
       <option value="run">transformers (NVIDIAが要る)</option>
     </select>
-    <input id="model" placeholder="モデル名 (任意)" size="26"></label>
+    <select id="model-pick" onchange="$('model').value=this.value"></select>
+    <input id="model" placeholder="モデル名を直に書く" size="26"></label>
   </fieldset>
   <button class="go" id="go" onclick="ask()">実行</button>
   <span id="busy" class="note"></span>
   <div id="out"></div>
 </section>
 </main>
+
+<main id="pane-talk" class="wide hide">
+<section>
+  <fieldset><legend>誰と話すか</legend>
+    <label><select id="engine2" onchange="fillModels('engine2','model2')">
+      <option value="llama">llama.cpp (手元・AMDでも動く)</option>
+      <option value="api">Claude の API (鍵が要る)</option>
+      <option value="run">transformers (NVIDIAが要る)</option>
+    </select>
+    <select id="model-pick2" onchange="$('model2').value=this.value"></select>
+    <input id="model2" placeholder="モデル名を直に書く" size="26"></label>
+    <label>人格 (空なら素のまま)
+      <textarea id="system" rows="2"
+        placeholder="あなたはセンチュリオン。生粋の文系で…"></textarea></label>
+    <button onclick="usePersona()">センチュリオンの人格を入れる</button>
+    <button onclick="clearTalk()">会話を捨てる</button>
+  </fieldset>
+  <div id="log"></div>
+  <textarea id="say" rows="3" placeholder="ここに書いて Ctrl+Enter で送る"
+            onkeydown="if(event.ctrlKey&&event.key==='Enter')talk()"></textarea>
+  <p><button class="go" id="go2" onclick="talk()">送る</button>
+     <span id="busy2" class="note"></span></p>
+</section>
+</main>
+
 <script>
 const $ = id => document.getElementById(id);
-let current = null;
+let current = null, models = {}, persona = "", history = [];
+
+function show(which) {
+  for (const name of ["work", "talk"]) {
+    $("pane-" + name).classList.toggle("hide", name !== which);
+    $("tab-" + name).classList.toggle("on", name === which);
+  }
+}
+
+function escape(text) {
+  return text.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+}
+
+function fillModels(from, into) {
+  const list = models[$(from).value] || [];
+  const pick = $(into === "model" ? "model-pick" : "model-pick2");
+  pick.innerHTML = "<option value=''>選ぶ…</option>"
+    + list.map(m => `<option>${escape(m)}</option>`).join("");
+}
 
 async function boot() {
+  const data = await (await fetch("/api/models")).json();
+  models = data.models; persona = data.persona;
+  fillModels("engine", "model"); fillModels("engine2", "model2");
   const names = await (await fetch("/api/manuscripts")).json();
-  $("doc").innerHTML = names.map(n => `<option>${n}</option>`).join("")
-    || "<option>manuscripts/ が空です</option>";
+  $("doc").innerHTML = names.map(n => `<option>${escape(n)}</option>`).join("")
+    || "<option value=''>置き場が空です</option>";
   if (names.length) load();
 }
 
+function source() {
+  const pasted = $("pasted").value.trim();
+  return pasted ? {text: pasted} : {name: $("doc").value};
+}
+
 async function load() {
-  const name = $("doc").value;
   $("state").textContent = "読んでいます…";
-  const url = `/api/manuscript?name=${encodeURIComponent(name)}`
-            + `&size=${$("size").value}`;
-  const data = await (await fetch(url)).json();
+  const data = await (await fetch("/api/manuscript", {
+    method: "POST", headers: {"content-type": "application/json"},
+    body: JSON.stringify({...source(), size: +$("size").value})})).json();
   if (data.error) { $("state").textContent = data.error; return; }
   current = data;
   $("state").textContent = "";
-  $("chunk").innerHTML = data.chunks
-    .map((c, i) => `<option value="${i + 1}">${i + 1}/${data.chunks.length} ${c}</option>`)
-    .join("");
+  $("chunk").innerHTML = data.chunks.map((c, i) =>
+    `<option value="${i + 1}">${i + 1}/${data.chunks.length} ${escape(c)}</option>`).join("");
+  const bars = rows => rows.map(([k, v]) =>
+    `<div class="item"><span class="bar" style="width:${Math.round(v * 60)}px"></span>`
+    + `${escape(k)} ${Math.round(v * 100)}%</div>`).join("");
   $("side").innerHTML =
-    `<b>${data.title}</b><br>${data.summary}<br><br>`
-    + `<b>実測</b><br>`
-    + data.survey.map(([k, v]) =>
-        `<div class="item"><span class="bar" style="width:${Math.round(v * 60)}px"></span>${k} ${Math.round(v * 100)}%</div>`).join("")
-    + `<br><b>観点の必要度</b><br>`
-    + data.needs.slice(0, 8).map(([k, v]) =>
-        `<div class="item"><span class="bar" style="width:${Math.round(v * 60)}px"></span>${k} ${Math.round(v * 100)}%</div>`).join("")
+    `<b>${escape(data.title)}</b><br>${escape(data.summary)}<br><br>`
+    + `<b>実測</b><br>${bars(data.survey)}`
+    + `<br><b>観点の必要度</b><br>${bars(data.needs.slice(0, 8))}`
     + (data.recurrences.length
-        ? `<br><b>反復</b><br>` + data.recurrences.map(r => `<div class="item">${r}</div>`).join("")
-        : `<br><span class="note">${data.no_recurrence || ""}</span>`);
+        ? `<br><b>反復</b><br>` + data.recurrences.map(r =>
+            `<div class="item">${escape(r)}</div>`).join("")
+        : `<br><span class="note">${escape(data.no_recurrence || "")}</span>`);
 }
 
 async function ask() {
   if (!current) { alert("先に原稿を読んでください"); return; }
   $("go").disabled = true;
-  $("busy").textContent = $("engine").value ? "訊いています… (数分かかります)" : "組んでいます…";
+  $("busy").textContent = $("engine").value
+    ? "訊いています… (数分かかります)" : "組んでいます…";
   $("out").innerHTML = "";
-  const body = {
-    name: $("doc").value, mode: $("mode").value, size: +$("size").value,
-    chunk: +$("chunk").value, lensmode: $("lensmode").value,
-    lens: $("lens").value, lenses: +$("lenses").value,
-    note: $("note").value, engine: $("engine").value, model: $("model").value,
-  };
   try {
     const data = await (await fetch("/api/ask", {
       method: "POST", headers: {"content-type": "application/json"},
-      body: JSON.stringify(body)})).json();
+      body: JSON.stringify({...source(), mode: $("mode").value,
+        size: +$("size").value, chunk: +$("chunk").value,
+        lensmode: $("lensmode").value, lens: $("lens").value,
+        lenses: +$("lenses").value, note: $("note").value,
+        engine: $("engine").value, model: $("model").value})})).json();
     $("out").innerHTML = data.error
-      ? `<div class="tip bad">${data.error}</div>` : data.html;
+      ? `<div class="tip bad">${escape(data.error)}</div>` : data.html;
   } catch (problem) {
-    $("out").innerHTML = `<div class="tip bad">${problem}</div>`;
-  } finally {
-    $("go").disabled = false; $("busy").textContent = "";
-  }
+    $("out").innerHTML = `<div class="tip bad">${escape(String(problem))}</div>`;
+  } finally { $("go").disabled = false; $("busy").textContent = ""; }
+}
+
+function usePersona() { $("system").value = persona; }
+function clearTalk() { history = []; $("log").innerHTML = ""; }
+
+function draw() {
+  $("log").innerHTML = history.map(turn =>
+    `<div class="turn ${turn.role === "user" ? "me" : "it"}">`
+    + `<span class="who">${turn.role === "user" ? "あなた" : "モデル"}</span>`
+    + escape(turn.content) + `</div>`).join("");
+  $("log").lastElementChild?.scrollIntoView({block: "nearest"});
+}
+
+async function talk() {
+  const said = $("say").value.trim();
+  if (!said) return;
+  history.push({role: "user", content: said});
+  $("say").value = ""; draw();
+  $("go2").disabled = true; $("busy2").textContent = "考えています…";
+  try {
+    const data = await (await fetch("/api/chat", {
+      method: "POST", headers: {"content-type": "application/json"},
+      body: JSON.stringify({messages: history, system: $("system").value,
+        engine: $("engine2").value, model: $("model2").value})})).json();
+    history.push({role: "assistant",
+                  content: data.error ? "— " + data.error : data.reply});
+    draw();
+  } finally { $("go2").disabled = false; $("busy2").textContent = ""; }
 }
 boot();
 </script></body></html>
 """
+
+
+def persona():
+    """チャットの人格として使えるセンチュリオンのプロンプト。
+    毎回の流動ではなく、会話の間ずっと同じものを使う"""
+    return build_fluid()[0]
 
 
 def listing():
@@ -216,13 +329,23 @@ def resolve(name):
     return path
 
 
-def structure(name, size):
-    manuscript = Manuscript.load(resolve(name))
+def obtain(body):
+    """置き場のファイルか、貼り付けられた本文か。
+    貼ってあればそちらを使う — その場で試したいときに、
+    いちいちファイルに保存させるのは手間が多い"""
+    pasted = (body.get("text") or "").strip()
+    if pasted:
+        return Manuscript(pasted, title="貼り付けた原稿")
+    return Manuscript.load(resolve(body.get("name", "")))
+
+
+def structure(body, size):
+    manuscript = obtain(body)
     chunks = manuscript.chunks(size=size, overlap=1)
     score, measured = needs(manuscript.paragraphs)
     found = recurrences(manuscript)
     return {
-        "title": manuscript.title or name,
+        "title": manuscript.title or "原稿",
         "summary": f"{len(manuscript.text)}文字 / "
                    f"{len(manuscript.paragraphs)}段落 / "
                    f"{len(manuscript.chapters)}章",
@@ -234,10 +357,13 @@ def structure(name, size):
     }
 
 
-def to_argv(body):
+def to_argv(body, path=None):
     """画面からの指定を、CLI と同じ argv に組む。
-    解釈を一箇所にまとめておけば、画面と端末で振る舞いがずれない"""
-    argv = [str(resolve(body["name"])),
+    解釈を一箇所にまとめておけば、画面と端末で振る舞いがずれない。
+
+    貼り付けた本文には置き場のファイルが無いので、
+    そのときは呼び手が仮置きの path を渡す"""
+    argv = [str(path or resolve(body.get("name", ""))),
             "--mode", body.get("mode", "発想"),
             "--size", str(body.get("size", 6000)),
             "--chunk", str(body.get("chunk", 1)),
@@ -296,11 +422,42 @@ def render(manuscript, answer, records, prompt=None):
     return "".join(parts)
 
 
+def solver_for(args):
+    if args.api:
+        return critique.Api(args.model or critique.API_MODEL)
+    if args.llama:
+        return critique.Llama(args.model or "", args.llama_url)
+    return critique.Local(args.model or critique.LOCAL_MODEL)
+
+
+def run_chat(body):
+    """普通の会話。原稿も観点も通さず、そのまま渡す"""
+    engine = body.get("engine", "llama")
+    argv = ["_", f"--{engine}"] if engine in ("llama", "api", "run") else ["_"]
+    if body.get("model", "").strip():
+        argv += ["--model", body["model"].strip()]
+    if body.get("llama_url", "").strip():
+        argv += ["--llama-url", body["llama_url"].strip()]
+    args = critique.build_parser().parse_args(argv)
+
+    messages = [turn for turn in body.get("messages", [])
+                if turn.get("role") in ("user", "assistant")
+                and turn.get("content")]
+    if not messages:
+        raise ValueError("何も書かれていない")
+    head = (body.get("system") or "").strip()
+    if head:
+        messages = [{"role": "system", "content": head}] + messages
+    return {"reply": solver_for(args).chat(messages, args.tokens)}
+
+
 def run_ask(body):
-    args = critique.build_parser().parse_args(to_argv(body))
+    manuscript = obtain(body)
+    args = critique.build_parser().parse_args(
+        to_argv(body, path=MANUSCRIPTS / "貼り付け.txt"
+                if body.get("text", "").strip() else None))
     if args.words == "形態素":
         critique.use_morphology(True)
-    manuscript = Manuscript.load(args.path)
     jobs = critique.tasks(manuscript, args)
     head, prompt_body, allowed, label = jobs[0]
 
@@ -309,14 +466,7 @@ def run_ask(body):
         return {"html": render(manuscript, "", records,
                                prompt=head + "\n\n---\n\n" + prompt_body)}
 
-    if args.api:
-        solve = critique.Api(args.model or critique.API_MODEL)
-    elif args.llama:
-        solve = critique.Llama(args.model or "", args.llama_url)
-    else:
-        solve = critique.Local(args.model or critique.LOCAL_MODEL)
-
-    answer = solve(head, prompt_body, args.tokens)
+    answer = solver_for(args)(head, prompt_body, args.tokens)
     records = critique.annotation_records(args, manuscript, [label])
     if body.get("save"):
         out = MANUSCRIPTS / f"{manuscript.title}_添削.txt"
@@ -346,22 +496,29 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(PAGE, "text/html")
             if route.path == "/api/manuscripts":
                 return self.reply(listing())
+            if route.path == "/api/models":
+                return self.reply({"models": critique.KNOWN_MODELS,
+                                   "persona": persona()})
             if route.path == "/api/manuscript":
                 query = parse_qs(route.query)
                 return self.reply(structure(
-                    query.get("name", [""])[0],
+                    {"name": query.get("name", [""])[0]},
                     int(query.get("size", ["6000"])[0])))
         except Exception as problem:
             return self.reply({"error": str(problem)})
         self.send_error(404)
 
     def do_POST(self):
-        if urlparse(self.path).path != "/api/ask":
+        route = urlparse(self.path).path
+        works = {"/api/ask": run_ask, "/api/chat": run_chat,
+                 "/api/manuscript": lambda body: structure(
+                     body, int(body.get("size", 6000)))}
+        if route not in works:
             return self.send_error(404)
         length = int(self.headers.get("content-length", 0))
         body = json.loads(self.rfile.read(length) or b"{}")
         try:
-            return self.reply(run_ask(body))
+            return self.reply(works[route](body))
         except SystemExit as stop:
             return self.reply({"error": str(stop)})
         except Exception as problem:
