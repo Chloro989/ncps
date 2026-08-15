@@ -711,7 +711,8 @@ def run_ask(body):
     if args.verify:
         answer, note = critique.run_verify(args, manuscript, answer,
                                            prompt_body)
-    records = critique.annotation_records(args, manuscript, [label])
+    records = critique.annotation_records(
+        args, manuscript, [label], outcome=critique.verify_outcome(note))
     return {"html": render(manuscript, answer, records, verified=note),
             "answer": answer, "label": label}
 

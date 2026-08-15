@@ -33,7 +33,8 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from .answer import annotate, find_quotes, report_quotes
+from .answer import (annotate, anchoring, find_quotes, report_anchoring,
+                     report_quotes)
 from .connect import (DREAM_WORK, MIN_CHARS, build_chain_prompt,
                       build_connection_prompt, distant_pairs, recurrences,
                       use_morphology)
@@ -502,7 +503,7 @@ def used_model(args):
     return "不明 (外で解かせた答え)"
 
 
-def annotation_records(args, manuscript, labels=(), source=""):
+def annotation_records(args, manuscript, labels=(), source="", outcome=""):
     """添削ファイルの見出しに残すもの。
     どのモードで、どのモデルに、どの範囲を、どの観点で読ませたか。
 
@@ -520,8 +521,12 @@ def annotation_records(args, manuscript, labels=(), source=""):
     if labels:
         records.append(("読ませた範囲と観点", " / ".join(labels)))
     if args.verify:
+        # 誰に検分させたかだけでなく、何件残って何件捨てられたかまで残す。
+        # 「検証: Qwen」とだけ書いてあっても、検分が働いたのか
+        # 素通りしたのかが後から分からない
         records.append(("検証", (args.verify_model or args.model or "同じモデル")
-                        + f" ({args.verify_with or '同じ経路'})"))
+                        + f" ({args.verify_with or '同じ経路'})"
+                        + (f" — {outcome}" if outcome else "")))
     records.append(("語の取り出し", args.words))
     return records
 
@@ -588,6 +593,14 @@ def run_verify(args, manuscript, answer, body_text):
             + verify.report(kept, dropped, unjudged))
 
 
+def verify_outcome(note):
+    """検証の経過から、記録に残す一行を作る"""
+    for line in (note or "").splitlines():
+        if "件を残し" in line or "働かなかった" in line or "すべて捨て" in line:
+            return line.replace("検証: ", "").replace("検証を ", "").strip()
+    return ""
+
+
 def report(answer, manuscript, allowed):
     """答えを検査して、気になるものだけ伝える。
 
@@ -605,10 +618,18 @@ def report(answer, manuscript, allowed):
                      " ← 中身を確かめずに書いている")
     print("# 段落番号 " + " / ".join(parts), file=sys.stderr)
 
+    # 引用の照合は「引用があるもの」しか見られない。
+    # どこも指さない指摘ばかりの答えは、照合を素通りして
+    # 「不一致0件」と出てしまう。錨の数を先に見る
+    anchored, total = anchoring(answer, manuscript)
+    for line in report_anchoring(anchored, total).splitlines():
+        print("# " + line.strip(), file=sys.stderr)
+
     quotes = find_quotes(answer, manuscript)
     for line in report_quotes(quotes).splitlines():
         print("# " + line, file=sys.stderr)
-    return bool(missing or outside or [q for q in quotes if not q.ok])
+    return bool(missing or outside or [q for q in quotes if not q.ok]
+                or (total and anchored / total < 0.5))
 
 
 def main(argv=None):
@@ -670,21 +691,24 @@ def main(argv=None):
         if index:
             print("\n" + "=" * 64 + "\n")
         answer = solve(head, body, args.tokens)
+        outcome = ""
         if args.verify:
             print("# 検分にかけています…", file=sys.stderr)
             answer, how = run_verify(args, manuscript, answer, body)
             for line in how.splitlines():
                 print("# " + line, file=sys.stderr)
+            outcome = verify_outcome(how)
         print(answer)
         report(answer, manuscript, allowed)
-        collected.append((answer, label))
+        collected.append((answer, label, outcome))
 
     if args.out:
         write_annotated(
-            args.out, "\n\n".join(answer for answer, _ in collected),
+            args.out, "\n\n".join(answer for answer, _, _ in collected),
             manuscript,
-            annotation_records(args, manuscript,
-                               [label for _, label in collected]))
+            annotation_records(
+                args, manuscript, [label for _, label, _ in collected],
+                outcome=" / ".join(o for _, _, o in collected if o)))
     return 0
 
 

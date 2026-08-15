@@ -144,6 +144,11 @@ def annotate(answer, manuscript, records=()):
         if value:
             out.append(f"# {name}: {value}")
 
+    anchored, total = anchoring(answer, manuscript)
+    if total:
+        for line in report_anchoring(anchored, total).splitlines():
+            out.append("# " + line.strip())
+
     ok = sum(1 for q in quotes if q.ok)
     if quotes:
         out.append(f"# 引用の照合: {len(quotes)}件中 一致{ok}件 / "
@@ -152,6 +157,8 @@ def annotate(answer, manuscript, records=()):
         if invented:
             out.append(f"# うち{len(invented)}件は本文に無い文の引用。"
                        f"{MARK_BAD} の付いた指摘は捨てること")
+    elif total:
+        out.append("# 引用が一つも無い。照合できるものが無いということでもある")
     out.append("")
 
     if preamble:
@@ -168,6 +175,47 @@ def annotate(answer, manuscript, records=()):
             out.append(f"    {mark} {line}")
         out.append("")
     return "\n".join(out)
+
+
+def anchoring(answer, manuscript, min_length=12):
+    """指摘のうち、原稿のどこかを指しているものの割合。
+
+    引用の照合は「引用があるもの」しか見られない。
+    どこも指さない指摘ばかりの答えは、照合を素通りしたまま
+    「不一致0件」と表示されて、良い答えのように見えてしまう。
+
+    実際にそうなった — 4件の指摘がどれも段落を指さず、
+    「静寂と微細な血流の揺らぎ」のような本文に無い言葉で埋まっていたのに、
+    照合は「1件中 一致1件」とだけ出ていた。
+
+    (錨のある数, 指摘の総数) を返す"""
+    total = anchored = 0
+    for line in answer.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("#") or set(stripped) <= set("-=*_ "):
+            continue
+        numbers = [int(n) for n in CITATION.findall(stripped)]
+        points = any(0 <= n < len(manuscript.paragraphs) for n in numbers)
+        # 番号を示している行は、短くても指摘として数える。
+        # 「[12] 冗長。」は言葉少なだが、行き先のある指摘である
+        if not points and len(stripped) < min_length:
+            continue
+        total += 1
+        anchored += points
+    return anchored, total
+
+
+def report_anchoring(anchored, total, floor=0.5):
+    """錨の少なさを伝える。少なければ、その答えは使えない"""
+    if not total:
+        return ""
+    share = anchored / total
+    line = f"原稿を指している指摘 {anchored}/{total}件 ({share:.0%})"
+    if share < floor:
+        line += ("\n  半分も原稿を指していない。"
+                 "本文から離れた一般論になっている疑いが強い。"
+                 "\n  観点を減らすか、より大きいモデルに解かせること")
+    return line
 
 
 def report_quotes(quotes):

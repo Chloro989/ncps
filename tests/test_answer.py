@@ -15,8 +15,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
-from centurion.answer import (MARK_BAD, MARK_OK, annotate, attach,
-                              find_quotes, report_quotes)
+from centurion.answer import (MARK_BAD, MARK_OK, anchoring, annotate, attach,
+                              find_quotes, report_anchoring, report_quotes)
 from centurion.manuscript import Manuscript
 
 passed = failed = 0
@@ -82,6 +82,32 @@ check("件数を数える", "3件中 一致1件 / 不一致2件" in summary, sum
 check("捏造の数を伝える", "1件は本文に存在しない" in summary)
 check("引用が無ければそう言う",
       "引用が見当たらない" in report_quotes([]))
+
+print("\n== 錨の数 ==")
+# 引用の照合は「引用があるもの」しか見られない。どこも指さない指摘ばかりの
+# 答えは、照合を素通りして「不一致0件」と出てしまう。実際にそうなった
+anchored, total = anchoring(
+    "[0] は良い。\n[1] も良い。\n全体として、静寂と血流の揺らぎがある。", work)
+check("指摘の総数を数える", total == 3, str(total))
+check("原稿を指している数を数える", anchored == 2, str(anchored))
+
+anchored, total = anchoring(
+    "静寂と微細な血流の揺らぎに集約される。\n"
+    "未完成の呪文が読者の潜在的記憶に埋め込まれる。\n"
+    "言葉にならない時間の裂け目である。", work)
+check("どこも指していなければ0", anchored == 0)
+summary = report_anchoring(anchored, total)
+check("割合を出す", "0/3件 (0%)" in summary, summary[:40])
+check("半分を割れば警告する", "半分も原稿を指していない" in summary)
+check("どう直せばよいかを言う", "観点を減らす" in summary)
+
+anchored, total = anchoring("[0] も [1] も良い。[3] は冗長。", work)
+check("錨があれば警告しない",
+      "半分も" not in report_anchoring(anchored, total))
+check("見出しは数えない", anchoring("### 熱量\n[0] は良い。", work)[1] == 1)
+check("短い行は数えない", anchoring("うん\n[0] は良いと思われる。", work)[1] == 1)
+check("空の答えなら0件", anchoring("", work) == (0, 0))
+check("0件なら何も言わない", report_anchoring(0, 0) == "")
 
 print("\n== 段落への振り分け ==")
 preamble, notes = attach("まず全体について。\n[1] は冗長である。\n"
