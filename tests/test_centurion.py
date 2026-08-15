@@ -12,9 +12,16 @@ import random
 import sys
 from pathlib import Path
 
-import torch
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+try:
+    import torch
+except ImportError:
+    # 原稿を読ませるだけの人は torch を入れない。
+    # この試験は小説を書く側のものなので、無いなら飛ばす
+    print("torch が無いので、小説を書く側の試験は飛ばす")
+    print("0件通過 / 0件失敗")
+    raise SystemExit(0)
 
 from centurion.generate import (BranchDiverter, ENTROPY_GATE,
                                 SUPPRESS_STRENGTH, SUPPRESS_TOP_K, trim)

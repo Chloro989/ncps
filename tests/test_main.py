@@ -99,6 +99,46 @@ check("通過数を出す", "件通過" in out)
 code, out, _ = run("test", "test_無い")
 check("無い試験名で落とす", code == 1)
 
+print("\n== torch 無しでも動くか ==")
+# READMEに「原稿を読ませるだけなら pip install は要らない」と書いてある。
+# ところが centurion/__init__.py が小説生成の側を素直に読み込んでいて、
+# ask も read も torch を要求していた。案内と食い違っていたので直した。
+# 同じことが戻らないよう、実際に別の python を起こして確かめる
+import subprocess
+
+probe = subprocess.run(
+    [sys.executable, "-c",
+     "import sys, centurion.critique;"
+     "print('torch' in sys.modules, 'transformers' in sys.modules)"],
+    capture_output=True, text=True, encoding="utf-8",
+    cwd=str(HERE.parent))
+check("論評の側を読み込める", probe.returncode == 0,
+      (probe.stderr or "").strip()[-120:])
+check("そのとき torch を読み込まない",
+      probe.stdout.strip().startswith("False"), probe.stdout.strip())
+check("そのとき transformers も読み込まない",
+      probe.stdout.strip().endswith("False"), probe.stdout.strip())
+
+probe = subprocess.run(
+    [sys.executable, "-c",
+     "import sys, centurion;"
+     "centurion.build_fluid;"
+     "print('torch' in sys.modules)"],
+    capture_output=True, text=True, encoding="utf-8",
+    cwd=str(HERE.parent))
+check("プロンプトだけ使うときも読み込まない",
+      probe.stdout.strip() == "False", probe.stdout.strip())
+
+import centurion
+check("小説を書く側は名前として見える",
+      "Centurion" in dir(centurion) and "Centurion" in centurion.__all__)
+try:
+    centurion.無い名前
+    named = False
+except AttributeError:
+    named = True
+check("無い名前はきちんと断る", named)
+
 print("\n== READMEと実物が合っているか ==")
 # 引数は増え続ける。書き忘れをここで止める
 readme = (HERE.parent / "README.md").read_text(encoding="utf-8")

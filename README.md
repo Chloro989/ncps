@@ -10,7 +10,7 @@
 | `ask` | 原稿を読ませて論評・発想を得る | 解かせるときだけ |
 | `check` | 答えが本文と食い違っていないか検査する | 不要 |
 | `write` | 小説を書かせる | 必要 |
-| `test` | 試験を全部走らせる(361件) | 不要 |
+| `test` | 試験を全部走らせる(367件) | 不要 |
 
 ---
 
@@ -21,10 +21,22 @@
 ```bash
 git clone https://github.com/Chloro989/ncps
 cd ncps
+python main.py
 ```
 
-原稿を読ませるだけなら、これで動く。`pip install` は要らない。
-小説を書かせる (`write`) ときだけ `pip install torch transformers accelerate`。
+**原稿を読ませるだけなら、これで動く。** Python 3.8以降があればよく、
+`pip install` も仮想環境も要らない(`read` `ask` `check` `test` は
+標準ライブラリだけで動く)。
+
+追加が要るのは次の2つだけ。
+
+| したいこと | 要るもの |
+|---|---|
+| 小説を書かせる (`write`) | `pip install torch transformers accelerate` |
+| 反復を形態素で探す (`--words 形態素`) | `pip install fugashi unidic-lite` |
+
+どちらも入れなければ、その機能だけが使えず、他は動く。
+試験も入っていない分は自動で飛ぶ。
 
 ## 2. 原稿を置く
 
@@ -107,11 +119,30 @@ python main.py check 答え.txt 第五稿.txt --out 添削.txt
 **手元にAMDのGPUしかないなら、これが唯一のGPUの道。**
 torch は RX 6700 XT を使えないが、llama.cpp は Vulkan で使える。
 
-別の窓でサーバを立てる。
+はじめに llama.cpp を入れる(一度だけ)。入れたら端末を開き直す。
 
 ```bash
-llama-server -hf LiquidAI/LFM2.5-1.2B-JP-202606-GGUF --port 8080
+winget install ggml.llamacpp
 ```
+
+GPU が見えているかを確かめる。`RX 6700 XT` が出れば成功。
+出なければ CPU 版なので、[llama.cpp のリリース](https://github.com/ggml-org/llama.cpp/releases)から
+`llama-*-bin-win-vulkan-x64.zip` を落として展開する。
+
+```bash
+llama-server --list-devices
+```
+
+別の窓でサーバを立てる。初回はモデルの取得で数分かかる。
+
+```bash
+llama-server -hf LiquidAI/LFM2.5-1.2B-JP-202606-GGUF -ngl 99 -c 16384 --port 8080
+```
+
+- `-ngl 99` … 全部の層を GPU に載せる
+- `-c 16384` … 文脈の広さ。原稿6000文字と答え4000トークンで、既定の4096では足りない
+
+この窓は開けたまま、別の窓でセンチュリオンを動かす。
 
 ```bash
 python main.py ask 第五稿.txt --mode 発想 --llama --model LFM2.5-1.2B-JP
@@ -754,7 +785,7 @@ centurion/          製品
   answer.py         答えの照合と添削ファイルの組み立て (モデル不要)
   critique.py       原稿を読ませる実行系。既定はプロンプトを出すだけ
   __main__.py       write のコマンドライン
-tests/              モデルを読まずに確かめられる部分の試験 (361件)
+tests/              モデルを読まずに確かめられる部分の試験 (367件)
 experiments/        実験の記録。凍結してある
 results/            測定の生データと報告
 ```
