@@ -17,8 +17,9 @@ sys.path.insert(0, str(HERE.parent))
 from centurion.manuscript import Manuscript
 from centurion.review import (GROUPS, IDEA_RULES, LENSES, NEED, REVIEW_RULES,
                               build_prompt, check_citations, choose_lenses,
-                              citations, describe, needs, number_paragraphs,
-                              resolve, suggest_lenses, survey)
+                              citations, describe, lenses_for, needs,
+                              number_paragraphs, resolve, suggest_lenses,
+                              survey)
 
 FIXTURES = HERE / "fixtures"
 passed = failed = 0
@@ -38,6 +39,9 @@ novel = Manuscript.load(FIXTURES / "sample_novel.txt")
 aozora = Manuscript.load(FIXTURES / "aozora_akuma.txt")
 
 print("== 観点 ==")
+# 観点は願望ではなく操作として書く。命令形で終わっているかで見る
+ORDERS = ("せよ。", "述べよ。", "挙げよ。", "示せ。", "問え。", "書け。",
+          "判じよ。", "分けよ。", "探せ。", "こと。")
 check("鍵が重複していない", len({l.key for l in LENSES}) == len(LENSES))
 check("群が複数ある", len(GROUPS) >= 5, str(GROUPS))
 # 実測「運命の九十分」(喜劇)で、18の観点のどれも可笑しみに触れなかった。
@@ -45,15 +49,44 @@ check("群が複数ある", len(GROUPS) >= 5, str(GROUPS))
 check("調子を扱う観点がある", "調子" in GROUPS, str(GROUPS))
 check("可笑しみを扱う観点がある",
       any(l.key == "笑い" for l in LENSES))
+
+print("\n== モードごとの観点 ==")
+# 査読の規則は「本文に無い要素について述べない」。提案を求める観点を
+# 査読で使うと規則と矛盾する。実際にそうなったプロンプトが出ていた
+# 本文に無いものを求める言い回し。「分量を示せ」のような
+# 書かれているものを示させる言い方は含めない
+PROPOSING = ("道を示せ", "別の形を", "二度目をどこに置く", "並べ替えたとき",
+             "入れるとしたら", "外し、かつ", "裏切った場合", "破るとしたら",
+             "語った場合", "選ばなかった", "入れれば効く", "持つべき",
+             "余地を作れる")
+for lens in lenses_for("査読"):
+    check(f"査読の【{lens.key}】が提案を求めていない",
+          not any(word in lens.question for word in PROPOSING),
+          lens.question[-40:])
+
+check("査読でも十分な数の観点がある", len(lenses_for("査読")) >= 8,
+      str(len(lenses_for("査読"))))
+check("発想では全部使える", len(lenses_for("発想")) == len(LENSES) - 7,
+      f"{len(lenses_for('発想'))} / {len(LENSES)}")
+check("査読専用の群がある", any(l.group == "査読" for l in LENSES))
+check("主題を扱う観点がある", any(l.key == "主題" for l in lenses_for("査読")))
+check("達成と未達を分けて訊く",
+      {"達成", "未達"} <= {l.key for l in lenses_for("査読")})
+
+picked = choose_lenses(random.Random(1), count=3, mode="査読")
+check("査読では査読の観点だけを選ぶ",
+      all("査読" in l.modes for l in picked),
+      str([l.key for l in picked]))
+sample = Manuscript("　彼は坂を下りていった。男が振り返った。\n\n　誰も来ない。")
+picked, _ = suggest_lenses(sample.paragraphs, count=3,
+                           rng=random.Random(1), mode="査読")
+check("実測から選ぶときも査読の観点だけ",
+      all("査読" in l.modes for l in picked),
+      str([l.key for l in picked]))
 check("すべて操作として書かれている",
-      all(l.question.rstrip().endswith(("せよ。", "述べよ。", "挙げよ。",
-                                        "示せ。", "問え。", "書け。",
-                                        "判じよ。", "分けよ。", "探せ。"))
-          for l in LENSES),
+      all(l.question.rstrip().endswith(ORDERS) for l in LENSES),
       str([l.key for l in LENSES
-           if not l.question.rstrip().endswith(
-               ("せよ。", "述べよ。", "挙げよ。", "示せ。", "問え。",
-                "書け。", "判じよ。", "分けよ。", "探せ。"))]))
+           if not l.question.rstrip().endswith(ORDERS)]))
 check("願望だけの言い回しを含まない",
       not any(word in l.question
               for l in LENSES
@@ -75,7 +108,7 @@ check("読み直すたびに入れ替わる",
 check("群を絞れる",
       all(l.group == "不在" for l in choose_lenses(rng, 2, groups=["不在"])))
 check("求める数が多すぎても落ちない",
-      len(choose_lenses(rng, count=99)) == len(LENSES))
+      len(choose_lenses(rng, count=99)) == len(lenses_for("発想")))
 check("群を絞ったうえで数が多くても落ちない",
       len(choose_lenses(rng, count=99, groups=["熱量"])) == 2)
 
@@ -182,7 +215,8 @@ check("原稿が違えば選ばれる観点も違う",
       != {l.key for l in suggest_lenses(nameless.paragraphs, count=4,
                                         rng=random.Random(3), jitter=0)[0]})
 check("求める数が多すぎても落ちない",
-      len(suggest_lenses(named.paragraphs, count=99)[0]) == len(LENSES))
+      len(suggest_lenses(named.paragraphs, count=99)[0])
+      == len(lenses_for("発想")))
 check("段落が無くても落ちない", len(suggest_lenses([], count=2)[0]) == 2)
 
 print("\n== 本文の番号 ==")

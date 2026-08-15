@@ -41,7 +41,8 @@ from .connect import (DREAM_WORK, MIN_CHARS, build_chain_prompt,
 from .manuscript import Manuscript
 from . import verify
 from .review import (LENS_BY_KEY, LENSES, build_prompt, check_citations,
-                     choose_lenses, describe, resolve, suggest_lenses)
+                     choose_lenses, describe, lenses_for, resolve,
+                     suggest_lenses)
 
 LOCAL_MODEL = "Qwen/Qwen2.5-3B-Instruct"
 API_MODEL = "claude-sonnet-5"
@@ -225,6 +226,8 @@ def pick_lenses(chunk, args, rng):
     既定は原稿を測って選ぶ。名前の出てこない原稿には「固有」を、
     出来事を語っていない原稿には「分岐」を向ける。
     --lens で名指しすれば、測定を無視してそれを使う"""
+    mode = args.mode
+    usable = lenses_for(mode)
     if args.lens:
         keys = [key.strip() for key in args.lens.replace("／", "/")
                 .replace("、", ",").replace("/", ",").split(",")
@@ -234,11 +237,20 @@ def pick_lenses(chunk, args, rng):
             raise SystemExit(
                 f"知らない観点: {'、'.join(unknown)}\n"
                 f"使えるのは: {'、'.join(l.key for l in LENSES)}")
+        # 提案を求める観点を査読で使うと、「本文に無い要素について
+        # 述べない」という規則と矛盾する。名指しでも断る
+        wrong = [key for key in keys if key not in {l.key for l in usable}]
+        if wrong:
+            raise SystemExit(
+                f"{mode}モードでは使えない観点: {'、'.join(wrong)}\n"
+                f"  提案を求める観点は査読の規則と矛盾する。\n"
+                f"  {mode}で使えるのは: "
+                f"{'、'.join(l.key for l in usable)}")
         return [LENS_BY_KEY[key] for key in keys], "指定"
     if args.random_lenses:
-        return choose_lenses(rng, count=args.lenses), "くじ引き"
+        return choose_lenses(rng, count=args.lenses, mode=mode), "くじ引き"
     lenses, measured = suggest_lenses(chunk.paragraphs, count=args.lenses,
-                                      rng=rng)
+                                      rng=rng, mode=mode)
     return lenses, "実測 " + describe(measured)
 
 
