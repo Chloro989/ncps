@@ -290,6 +290,30 @@ check("選択欄は三つとも別々",
 check("創作の解かせ方が自分の欄を埋めに行く",
       "window.fillModels('engine3','model3')" in page)
 
+print("\n== 厳しさと採点 ==")
+check("採点モードが選べる", "<option>採点</option>" in page)
+check("厳しさの欄がある", 'id="severity"' in page)
+for level in ("育成", "標準", "厳格"):
+    check(f"{level}が選べる", f'value="{level}"' in page)
+check("既定は標準", 'value="標準" selected' in page)
+check("どれがどういう基準かを画面で言う", "評価1が商業水準" in page)
+# 効かない欄を出したままにすると、設定したつもりのものが黙って無視される
+check("モードで欄を出し分ける", "function modeChanged()" in page)
+check("最初にも一度出し分ける", "modeChanged();" in page)
+check("厳しさが効くのは査読と採点だけ",
+      'SEVERITY_MODES = ["査読", "採点"]' in page)
+check("観点が効くのは発想と査読だけ",
+      'LENS_MODES = ["発想", "査読"]' in page)
+
+argv = web.to_argv({"name": "あっちゃぐり.txt", "mode": "採点",
+                    "severity": "厳格"})
+check("厳しさが引数に入る",
+      argv[argv.index("--severity") + 1] == "厳格")
+check("省いても既定が入る",
+      web.to_argv({"name": "あっちゃぐり.txt"})[
+          web.to_argv({"name": "あっちゃぐり.txt"}).index("--severity") + 1]
+      == "標準")
+
 print("\n== 検証 ==")
 for want, why in [('id="verify"', "検分の切り替えがある"),
                   ("verify-with", "検分させる相手を選べる"),

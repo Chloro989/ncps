@@ -50,7 +50,9 @@ print("== 引数 ==")
 args = critique.build_parser().parse_args([str(NOVEL)])
 check("既定は発想モード", args.mode == "発想")
 check("既定ではモデルを呼ばない", not args.run)
-check("モードは四つ", set(critique.MODES) == {"発想", "査読", "接続", "連想"})
+check("モードは五つ",
+      set(critique.MODES) == {"発想", "査読", "採点", "接続", "連想"})
+check("既定の厳しさは標準", args.severity == "標準")
 
 print("\n== プロンプトを出す ==")
 code, out = run(str(NOVEL), "--mode", "発想", "--seed", "3")
@@ -169,7 +171,7 @@ try:
     run(str(NOVEL), "--mode", "連想", "--all")
     refused = False
 except SystemExit as stop:
-    refused = "--all は発想と査読" in str(stop)
+    refused = "--all は発想・査読・採点" in str(stop)
 check("接続と連想では --all を断る", refused)
 
 print("\n== モデルの呼び分け ==")
@@ -273,6 +275,61 @@ check("パスは残さずファイル名だけにする",
 check("外の答えならモードは申告扱い", "(申告)" in checked["モード"])
 check("範囲が分からなければその欄を出さない",
       "読ませた範囲と観点" not in checked)
+
+check("査読なら厳しさを残す",
+      records_for("--mode", "査読", "--severity", "厳格")["厳しさ"] == "厳格")
+check("採点でも厳しさを残す",
+      records_for("--mode", "採点", "--severity", "育成")["厳しさ"] == "育成")
+# 効かないモードで厳しさを書くと、設定したつもりのものが効いたと誤解される
+check("発想では厳しさを残さない",
+      "厳しさ" not in records_for("--mode", "発想", "--severity", "厳格"))
+check("接続でも厳しさを残さない",
+      "厳しさ" not in records_for("--mode", "接続"))
+# prompts/ にある全部を並べると嘘になる。一回で読むのは1〜2枚だけ
+with TemporaryDirectory() as folder:
+    critique.review.export_wording(folder)
+    used = records_for("--mode", "採点", "--severity", "厳格",
+                       "--prompts", folder)["文面"]
+    check("使った文面だけを残す", "採点-厳格.txt" in used, used)
+    check("使っていない文面は残さない", "採点-育成" not in used, used)
+    check("採点では観点ファイルを挙げない", "観点.txt" not in used, used)
+    used = records_for("--mode", "査読", "--prompts", folder)["文面"]
+    check("査読では観点ファイルも挙げる", "観点.txt" in used, used)
+    check("接続では文面を残さない",
+          "文面" not in records_for("--mode", "接続", "--prompts", folder))
+with TemporaryDirectory() as empty:
+    check("外部ファイルが無ければ文面を残さない",
+          "文面" not in records_for("--prompts", empty))
+
+
+print("\n== 厳しさと採点モード ==")
+code, out = run(str(NOVEL), "--mode", "採点", "--severity", "厳格")
+check("採点は正常に終わる", code == 0)
+check("採点にルーブリックが入る", "### 1. 構成・プロット" in out)
+check("採点は七観点ぶん出す", out.count("  5: ") == 7, str(out.count("  5: ")))
+check("採点は観点を選ばない", "今回の観点は次の" not in out)
+check("厳格の基準が入る", "商業出版可能" in out)
+
+code, out = run(str(NOVEL), "--mode", "査読", "--severity", "育成", "--seed", "3")
+check("育成は正常に終わる", code == 0)
+check("育成は良い点を先に挙げさせる", "良かった点を必ず" in out)
+check("育成でも観点は出る", "今回の観点は次の" in out)
+
+# 採点は観点を使わないので、--lenses の警告を出す意味がない
+import io as _io
+from contextlib import redirect_stderr
+noise = _io.StringIO()
+with redirect_stderr(noise):
+    run(str(NOVEL), "--mode", "採点", "--lenses", "8")
+check("採点では観点の個数を警告しない", "観点が8個" not in noise.getvalue())
+
+try:
+    critique.build_parser().parse_args([str(NOVEL), "--severity", "超厳格"])
+    refused = False
+except SystemExit:
+    refused = True
+check("知らない厳しさは受け付けない", refused)
+
 
 print("\n== 検分にかける ==")
 manuscript = Manuscript.load(NOVEL)

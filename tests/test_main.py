@@ -52,13 +52,38 @@ check("知らない命令を名指しする", "foo" in err)
 check("案内も一緒に出す", "read" in out)
 
 print("\n== 命令の一覧 ==")
-check("六つある",
-      set(entry.COMMANDS) == {"read", "ask", "check", "web", "write", "test"},
+check("七つある",
+      set(entry.COMMANDS) == {"read", "ask", "check", "web", "write",
+                              "prompts", "test"},
       str(sorted(entry.COMMANDS)))
 check("試験の一覧が空でない", len(entry.TESTS) >= 5)
 check("試験の一覧が実在する",
       all((HERE / f"{name}.py").exists() for name in entry.TESTS),
       str([n for n in entry.TESTS if not (HERE / f"{n}.py").exists()]))
+
+print("\n== prompts ==")
+with TemporaryDirectory() as folder:
+    code, out, _ = run("prompts", "--dir", folder)
+    check("正常に終わる", code == 0)
+    made = sorted(path.name for path in Path(folder).glob("*.txt"))
+    check("八つ書き出す", len(made) == 8, str(made))
+    check("観点を書き出す", "観点.txt" in made)
+    check("厳しさごとに書き出す",
+          "査読-厳格.txt" in made and "採点-育成.txt" in made)
+    check("何を書いたかを言う", "書いた:" in out)
+    check("編集すれば使われると伝える", "編集すれば" in out)
+
+    code, out, _ = run("prompts", "--dir", folder)
+    check("二度目は上書きしない", "すでにある" in out)
+    check("戻し方を伝える", "--force" in out)
+
+    # 書き出したものをそのまま使って、実際に指示が組めるか。
+    # 書き出しと読み込みの書式がずれていれば、ここで落ちる
+    code, out, _ = run("ask", str(NOVEL), "--mode", "採点",
+                       "--severity", "厳格", "--prompts", folder)
+    check("書き出した文面で指示が組める",
+          code == 0 and "構成・プロット" in out)
+
 
 print("\n== read ==")
 code, out, _ = run("read", str(NOVEL), "--size", "600")

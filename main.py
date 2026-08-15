@@ -41,9 +41,10 @@ USAGE = """センチュリオン
 
   web                  ブラウザから使う (127.0.0.1 にだけ開く)
   read   [原稿]        章・段落・切り出し・反復の一覧を見る
-  ask    [原稿]        原稿を読ませる (--mode 発想/査読/接続/連想)
+  ask    [原稿]        原稿を読ませる (--mode 発想/査読/採点/接続/連想)
   check  答え [原稿]   答えの段落番号が実在するかを検査する
   write  お題...       小説を書かせる (モデルが要る)
+  prompts              プロンプトの文面を prompts/ に書き出す (編集用)
   test                 試験を全部走らせる
 
 原稿のパスは省ける。手元のPCなら選択の窓、Colab ならアップロードの窓が開く。
@@ -56,6 +57,25 @@ manuscripts/ に置いた原稿はファイル名だけで呼べる。
 
   --out を付けると、本文の各段落の下にその段落あての指摘を貼った
   添削ファイルを書く。引用が本文と食い違う指摘には × が付く。
+
+厳しさを選ぶ (査読と採点):
+  python main.py ask 第五稿.txt --mode 査読 --severity 育成
+  python main.py ask 第五稿.txt --mode 採点 --severity 厳格
+
+  育成  良かった点を先に述べる。評価3が「アマチュアとして十分健闘」
+  標準  良い点と問題点を同じ精度で述べる (既定)
+  厳格  卓越性の有無だけを問う。評価1が「商業出版可能な一般的作品」
+
+  採点は7観点 (構成/人物/文体/描写/対話/主題/世界観) の5段階評価。
+  査読は観点を回して自由に論じる。同じ厳しさの指定が両方に効く。
+
+プロンプトを書き換える:
+  python main.py prompts               既定の文面を prompts/ に書き出す
+  (prompts/査読-厳格.txt などを編集する)
+  python main.py ask 第五稿.txt --mode 査読 --severity 厳格
+
+  prompts/ にファイルがあればそれが使われる。消せば既定値に戻る。
+  prompts/観点.txt を編集すれば観点そのものを足せる。
 
 観点の決め方:
   既定は原稿を実測して、足りていないところへ問いを向ける。
@@ -87,8 +107,8 @@ manuscripts/ に置いた原稿はファイル名だけで呼べる。
 """
 
 TESTS = ["test_centurion", "test_manuscript", "test_review",
-         "test_connect", "test_answer", "test_verify", "test_critique",
-         "test_web", "test_main"]
+         "test_rubric", "test_connect", "test_answer", "test_verify",
+         "test_critique", "test_web", "test_main"]
 
 
 def cmd_read(rest):
@@ -154,8 +174,40 @@ def cmd_test(rest):
     return 0
 
 
+def cmd_prompts(rest):
+    """プロンプトの文面を prompts/ に書き出す。
+
+    書き出したファイルを編集すれば、そのまま次回から使われる。
+    ソースを書き換えずに文面を試せるようにするため"""
+    from centurion import review, wording
+
+    parser = argparse.ArgumentParser(
+        prog="main.py prompts",
+        description="プロンプトの文面を書き出して、編集できるようにする")
+    parser.add_argument("--dir", metavar="置き場",
+                        help=f"書き出す先 (既定 {wording.HOME.name}/)")
+    parser.add_argument("--force", action="store_true",
+                        help="既にあるファイルも既定値で上書きする")
+    args = parser.parse_args(rest)
+
+    written, skipped = review.export_wording(args.dir, args.force)
+    folder = wording.home(args.dir)
+    for path in written:
+        print(f"書いた: {path.name}")
+    for path in skipped:
+        print(f"すでにある (触っていない): {path.name}")
+    if skipped and not args.force:
+        print()
+        print("既定値に戻したいものは消すか、--force で上書きする")
+    print()
+    print(f"{folder} の中を編集すれば、次回からその文面が使われる。")
+    print("ファイルを消せば組み込みの既定値に戻る。")
+    return 0
+
+
 COMMANDS = {
     "read": cmd_read,
+    "prompts": cmd_prompts,
     "ask": cmd_ask,
     "check": cmd_check,
     "web": cmd_web,

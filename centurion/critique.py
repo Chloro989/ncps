@@ -40,9 +40,11 @@ from .connect import (DREAM_WORK, MIN_CHARS, build_chain_prompt,
                       use_morphology)
 from .manuscript import Manuscript
 from . import verify
-from .review import (LENS_BY_KEY, LENSES, build_prompt, check_citations,
-                     choose_lenses, describe, lenses_for, resolve,
-                     suggest_lenses)
+from . import review, rubric, wording
+# review.LENSES と review.LENS_BY_KEY は prompts/観点.txt で差し替わるので、
+# 名前で取り込まず review 越しに読む
+from .review import (build_prompt, check_citations, choose_lenses, describe,
+                     lenses_for, resolve, suggest_lenses, uses_lenses)
 
 LOCAL_MODEL = "Qwen/Qwen2.5-3B-Instruct"
 API_MODEL = "claude-sonnet-5"
@@ -72,7 +74,7 @@ KNOWN_MODELS = {
 }
 MAX_TOKENS = 4000          # 論評は長い。小説生成の150では話にならない
 CHUNK_SIZE = 6000
-MODES = ["発想", "査読", "接続", "連想"]
+MODES = ["発想", "査読", "採点", "接続", "連想"]
 
 
 class Local:
@@ -232,11 +234,11 @@ def pick_lenses(chunk, args, rng):
         keys = [key.strip() for key in args.lens.replace("／", "/")
                 .replace("、", ",").replace("/", ",").split(",")
                 if key.strip()]
-        unknown = [key for key in keys if key not in LENS_BY_KEY]
+        unknown = [key for key in keys if key not in review.LENS_BY_KEY]
         if unknown:
             raise SystemExit(
                 f"知らない観点: {'、'.join(unknown)}\n"
-                f"使えるのは: {'、'.join(l.key for l in LENSES)}")
+                f"使えるのは: {'、'.join(l.key for l in review.LENSES)}")
         # 提案を求める観点を査読で使うと、「本文に無い要素について
         # 述べない」という規則と矛盾する。名指しでも断る
         wrong = [key for key in keys if key not in {l.key for l in usable}]
@@ -246,7 +248,7 @@ def pick_lenses(chunk, args, rng):
                 f"  提案を求める観点は査読の規則と矛盾する。\n"
                 f"  {mode}で使えるのは: "
                 f"{'、'.join(l.key for l in usable)}")
-        return [LENS_BY_KEY[key] for key in keys], "指定"
+        return [review.LENS_BY_KEY[key] for key in keys], "指定"
     if args.random_lenses:
         return choose_lenses(rng, count=args.lenses, mode=mode), "くじ引き"
     lenses, measured = suggest_lenses(chunk.paragraphs, count=args.lenses,
@@ -278,19 +280,23 @@ def compose(manuscript, args, chunk=None, nudge=0):
     一度に渡す観点を減らして塊ごとに入れ替えるのが Phase 9 の処方"""
     rng = random.Random(None if args.seed is None else args.seed + nudge)
 
-    if args.mode in ("発想", "査読"):
+    if args.mode in ("発想", "査読", "採点"):
         chunks, picked = pick_chunk(manuscript, args.size, args.chunk)
         chunk = chunk or picked
-        lenses, how = pick_lenses(chunk, args, rng)
+        # 採点は7観点が固定なので、観点を選ばない
+        lenses, how = (pick_lenses(chunk, args, rng)
+                       if uses_lenses(args.mode) else ((), ""))
         place = (f"{len(chunks)}つに分けたうちの"
                  f"{chunks.index(chunk) + 1}つ目、{chunk}")
         head, body = build_prompt(
             chunk, lenses, mode=args.mode, title=manuscript.title,
-            author=manuscript.author, note=args.note, place=place)
+            author=manuscript.author, note=args.note, place=place,
+            severity=args.severity, directory=args.prompts)
         allowed = {p.index for p in chunk.paragraphs}
+        what = (f"{'／'.join(l.key for l in lenses)} [{how}]"
+                if lenses else f"{args.severity}のルーブリック")
         return (head, body, allowed,
-                f"{chunks.index(chunk) + 1}/{len(chunks)}塊 "
-                f"{'／'.join(l.key for l in lenses)} [{how}]")
+                f"{chunks.index(chunk) + 1}/{len(chunks)}塊 {what}")
 
     if args.mode == "接続":
         # 反復があればそれを優先する。作者がすでに植えた種のほうが確度が高い
@@ -336,6 +342,17 @@ def build_parser():
     parser.add_argument("--mode", default="発想", choices=MODES,
                         help="何を訊くか (既定 発想)。"
                              "接続は3000文字以上の原稿でしか成り立たない")
+    parser.add_argument("--severity", default=review.DEFAULT_SEVERITY,
+                        choices=list(rubric.SEVERITIES),
+                        help="査読と採点の厳しさ "
+                             f"(既定 {review.DEFAULT_SEVERITY})。"
+                             "育成は良い点を先に述べ評価3を健闘とする。"
+                             "厳格は商業水準を評価1とする。"
+                             "発想・接続・連想では使わない")
+    parser.add_argument("--prompts", metavar="置き場",
+                        help="プロンプトの文面を読む場所 "
+                             f"(既定 {wording.HOME.name}/)。"
+                             "main.py prompts で既定値を書き出せる")
     parser.add_argument("--size", type=int, default=CHUNK_SIZE,
                         help=f"1塊の上限文字数 (既定 {CHUNK_SIZE})")
     parser.add_argument("--chunk", type=int,
@@ -452,7 +469,7 @@ def show_survey(manuscript, args):
         print(f"  {labels.get(key, key):<28} {value:>5.0%}")
 
     print("\n観点の必要度 (高いほどこの原稿に効くと見込まれる)")
-    for lens in sorted(LENSES, key=lambda l: -score[l.key]):
+    for lens in sorted(review.LENSES, key=lambda l: -score[l.key]):
         print(f"  {score[lens.key]:>5.0%}  【{lens.key}】{lens.group}")
     print("\n上から群を散らして選ぶ。"
           "--lens 視点,熱量 で名指しすれば測定を無視する")
@@ -519,6 +536,24 @@ def used_model(args):
     return "不明 (外で解かせた答え)"
 
 
+def used_wording(args):
+    """外部ファイルの文面を使ったなら、どれを使ったかを一行で。
+
+    prompts/ にある全部を並べると嘘になる。一回の実行で読むのは
+    そのモードと厳しさのファイルだけで、他は使われていない"""
+    if not uses_lenses(args.mode) and args.mode not in ("採点",):
+        return ""          # 接続と連想は prompts/ を見ない
+    folder = wording.home(args.prompts)
+    where = args.prompts or folder.name
+    files = []
+    name = review.heading_name(args.mode, args.severity)
+    if wording.path(name, args.prompts).exists():
+        files.append(f"{name}.txt")
+    if wording.path("観点", args.prompts).exists() and uses_lenses(args.mode):
+        files.append("観点.txt")
+    return f"{where}/ の {'、'.join(files)}" if files else ""
+
+
 def annotation_records(args, manuscript, labels=(), source="", outcome=""):
     """添削ファイルの見出しに残すもの。
     どのモードで、どのモデルに、どの範囲を、どの観点で読ませたか。
@@ -529,6 +564,14 @@ def annotation_records(args, manuscript, labels=(), source="", outcome=""):
         ("日付", datetime.now().strftime("%Y-%m-%d %H:%M")),
         ("モード", args.mode if not source else f"{args.mode} (申告)"),
         ("モデル", used_model(args)),
+    ]
+    # 厳しさは査読と採点でしか効かない。効かないモードで書くと誤解を招く
+    if args.mode in ("査読", "採点"):
+        records.append(("厳しさ", args.severity))
+    used = used_wording(args)
+    if used:
+        records.append(("文面", used))
+    records += [
         ("原稿", f"{len(manuscript.text)}文字 / "
                  f"{len(manuscript.paragraphs)}段落"),
     ]
@@ -558,8 +601,8 @@ def tasks(manuscript, args):
     """読ませる仕事の並びを作る。--all なら塊の数だけ並ぶ"""
     if not args.all:
         return [compose(manuscript, args)]
-    if args.mode not in ("発想", "査読"):
-        raise SystemExit("--all は発想と査読でだけ使える")
+    if args.mode not in ("発想", "査読", "採点"):
+        raise SystemExit("--all は発想・査読・採点でだけ使える")
     chunks, _ = pick_chunk(manuscript, args.size, None)
     return [compose(manuscript, args, chunk=chunk, nudge=index)
             for index, chunk in enumerate(chunks)]
@@ -687,6 +730,9 @@ def report(answer, manuscript, allowed):
 
 def main(argv=None):
     args = build_parser().parse_args(argv)
+    if review.load_wording(args.prompts):
+        print(f"# 観点を {wording.path('観点', args.prompts)} から読んだ",
+              file=sys.stderr)
     if args.words == "形態素":
         try:
             use_morphology(True)
@@ -705,7 +751,7 @@ def main(argv=None):
     if args.survey:
         show_survey(manuscript, args)
         return 0
-    if args.mode in ("発想", "査読") and not args.lens:
+    if uses_lenses(args.mode) and not args.lens:
         warn_lenses(args.lenses)
     warn_same_judge(args)
 

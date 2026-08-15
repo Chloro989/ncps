@@ -36,6 +36,10 @@ import re
 import statistics
 from dataclasses import dataclass
 
+from . import rubric, wording
+
+DEFAULT_SEVERITY = "標準"
+
 # 段落の指し方。モデルにはこの番号で答えさせ、実在するかを機械が検査する。
 # 「引用が実在するか確認せよ」と自己申告させるより確実
 CITATION = re.compile(r"\[(\d+)\]")
@@ -43,6 +47,11 @@ CITATION = re.compile(r"\[(\d+)\]")
 
 IDEA = "発想"
 REVIEW = "査読"
+SCORE = "採点"
+
+# 観点を使うモード。採点はルーブリックが観点の代わりなので含めない
+LENS_MODES = (IDEA, REVIEW)
+MODES = (IDEA, REVIEW, SCORE)
 
 
 @dataclass(frozen=True)
@@ -62,8 +71,14 @@ def lenses_for(mode):
     return [lens for lens in LENSES if mode in lens.modes]
 
 
-# 観点の一覧。群ごとに性質が違うので、選ぶときは群を散らす
-LENSES = [
+def uses_lenses(mode):
+    """このモードが観点を使うか。採点はルーブリックが観点の代わり"""
+    return mode in LENS_MODES
+
+
+# 観点の一覧。群ごとに性質が違うので、選ぶときは群を散らす。
+# prompts/観点.txt があればそちらで置き換わる (末尾の load_wording)
+BUILTIN_LENSES = [
     # --- 構造を疑う。あるものを取り去って、何が支えていたかを見る
     Lens("削除", "構造",
          "この範囲から一つの場面か人物か段落を消したとき、"
@@ -181,8 +196,17 @@ LENSES = [
          "何を狙ったと読めるか、なぜ届いていないかを分けて書け。", modes=(REVIEW,)),
 ]
 
+LENSES = list(BUILTIN_LENSES)
 LENS_BY_KEY = {lens.key: lens for lens in LENSES}
 GROUPS = sorted({lens.group for lens in LENSES})
+
+
+def set_lenses(lenses):
+    """観点を差し替える。prompts/観点.txt を読んだときに使う"""
+    global LENSES, LENS_BY_KEY, GROUPS
+    LENSES = list(lenses)
+    LENS_BY_KEY = {lens.key: lens for lens in LENSES}
+    GROUPS = sorted({lens.group for lens in LENSES})
 
 
 # ===== 原稿を測って観点を選ぶ =====
@@ -330,11 +354,12 @@ def describe(measured):
     """実測を一行で。なぜその観点が選ばれたかを見せるため"""
     return " / ".join(f"{key}{value:.0%}" for key, value in measured.items())
 
-# 査読モード。note などで共有されている審査プロンプトと同じ思想。
-# 幻覚と忖度を防ぐための規則で固める
+# 査読モードの、厳しさによらず守らせる規則。
+# 幻覚を防ぐための部分だけをここに置く。
+# 「忖度をしない」のような態度の指定は厳しさごとに変わるので rubric 側にある —
+# 育成は「良かった点を必ず挙げる」ので、絶対的な「忖度をしない」と衝突する
 REVIEW_RULES = [
     "日本語の文芸作品として読み、他の言語の基準を持ち込まない。",
-    "作者への配慮や忖度をしない。好悪の感情で評価しない。",
     "指摘は必ず段落番号 [12] の形で示す。番号は渡された本文のものだけを使う。",
     "本文に無い要素について述べない。",
     "作品の「言葉にならない魅力」や読者の内面については述べない。"
@@ -401,34 +426,70 @@ def number_paragraphs(paragraphs, mark=None):
     return "\n".join(lines)
 
 
+IDEA_ROLE = ("あなたは書き手の伴走者である。"
+             "作品を評価するのではなく、この原稿がまだ行っていない先を探す。")
+
+
+def block(role, rules):
+    """役割と規則を一つの文面にする。prompts/ に書き出す単位でもある"""
+    return "\n".join([role, "", "守ること:"] + [f"- {rule}" for rule in rules])
+
+
+def default_headings():
+    """モードと厳しさごとの既定の文面。prompts/ の初期値になる"""
+    texts = {IDEA: block(IDEA_ROLE, IDEA_RULES)}
+    for severity in rubric.SEVERITIES:
+        texts[f"{REVIEW}-{severity}"] = block(
+            rubric.SEVERITY_ROLE[severity],
+            REVIEW_RULES + rubric.SEVERITY_RULES[severity])
+        texts[f"{SCORE}-{severity}"] = rubric.build_score_prompt(severity)
+    return texts
+
+
+def heading_name(mode, severity):
+    """この (モード, 厳しさ) に対応する prompts/ のファイル名"""
+    return mode if mode == IDEA else f"{mode}-{severity}"
+
+
+def heading_for(mode, severity=DEFAULT_SEVERITY, directory=None):
+    """指示の頭を得る。prompts/ にファイルがあればそちらを使う"""
+    if severity not in rubric.SEVERITIES:
+        raise ValueError(f"厳しさは {'、'.join(rubric.SEVERITIES)} のどれか: "
+                         f"{severity}")
+    name = heading_name(mode, severity)
+    return wording.heading(name, default_headings()[name], directory)
+
+
 def build_prompt(chunk, lenses, mode="発想", title="", author="",
-                 note="", place=""):
+                 note="", place="", severity=DEFAULT_SEVERITY,
+                 directory=None):
     """一回ぶんの読みを組み立てる。(指示, 本文) を返す。
 
-    chunk   manuscript.chunks() が返す塊
-    lenses  この回で使う観点
-    mode    査読 か 発想
-    note    作者からの補足。狙いや訊きたいこと
-    place   原稿全体の中でこの塊がどこかの説明
+    chunk     manuscript.chunks() が返す塊
+    lenses    この回で使う観点。採点モードでは使わない
+    mode      査読 / 発想 / 採点
+    severity  査読と採点の厳しさ。育成 / 標準 / 厳格
+    note      作者からの補足。狙いや訊きたいこと
+    place     原稿全体の中でこの塊がどこかの説明
+    directory 文面を読む場所。既定は prompts/
     """
-    rules = REVIEW_RULES if mode == "査読" else IDEA_RULES
-    role = ("あなたは日本の文芸作品を専門とする分析者である。"
-            "小説家・批評家・編集者の視点を併せ持つ。"
-            if mode == "査読" else
-            "あなたは書き手の伴走者である。"
-            "作品を評価するのではなく、この原稿がまだ行っていない先を探す。")
+    head = [heading_for(mode, severity, directory)]
 
-    head = [role, ""]
-    head.append("守ること:")
-    head.extend(f"- {rule}" for rule in rules)
-    head.append("")
-    head.append(f"今回の観点は次の{len(lenses)}つだけである。"
-                "これ以外のことは書かない。")
-    for index, lens in enumerate(lenses, 1):
-        head.append(f"{index}. 【{lens.key}】{lens.question}")
-    head.append("")
-    head.append("観点ごとに見出しを立てて答える。"
-                "全体のまとめや励ましは書かない。")
+    if mode == SCORE:
+        # 採点は7観点が固定なので、くじ引きの観点は使わない
+        head.append("")
+        head.append("原稿の一部だけが渡されることがある。"
+                    "その場合は渡された範囲だけを見て採点し、"
+                    "見えていない部分を想像で補わない。")
+    else:
+        head.append("")
+        head.append(f"今回の観点は次の{len(lenses)}つだけである。"
+                    "これ以外のことは書かない。")
+        for index, lens in enumerate(lenses, 1):
+            head.append(f"{index}. 【{lens.key}】{lens.question}")
+        head.append("")
+        head.append("観点ごとに見出しを立てて答える。"
+                    "全体のまとめや励ましは書かない。")
 
     body = []
     if title:
@@ -441,7 +502,8 @@ def build_prompt(chunk, lenses, mode="発想", title="", author="",
     body.append("")
     mark = {p.index for p in chunk.paragraphs[chunk.carried:]}
     body.append(number_paragraphs(chunk.paragraphs, mark))
-    if note and mode != "査読":
+    # 補足は発想モードだけに渡す。査読と採点は作者の弁明を聞かずに判じる
+    if note and mode == IDEA:
         body.append("")
         body.append(f"作者からの補足: {note}")
     return "\n".join(head), "\n".join(body)
@@ -479,3 +541,24 @@ def resolve(text, manuscript, length=28):
         body = manuscript.paragraphs[number].text[:length]
         return f"[{number}「{body}…」]"
     return CITATION.sub(replace, text)
+
+
+# ===== 外部ファイルの取り込み =====
+
+def load_wording(directory=None):
+    """prompts/観点.txt があれば観点を差し替える。
+    差し替えたら True。指示の頭は build_prompt が呼ばれるたびに読むので
+    ここでは触らない"""
+    rows = wording.load_lenses(directory)
+    if rows is None:
+        return False
+    set_lenses([Lens(key, group, question, modes)
+                for key, group, modes, question in rows])
+    return True
+
+
+def export_wording(directory=None, force=False):
+    """既定の文面を prompts/ に書き出す。編集の出発点にするため"""
+    texts = default_headings()
+    texts[wording.LENS_FILE[:-4]] = wording.format_lenses(BUILTIN_LENSES)
+    return wording.export(texts, directory, force)

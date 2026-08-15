@@ -33,7 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import critique
+from . import critique, review
 from .answer import MARK_BAD, MARK_OK, annotate, attach, find_quotes
 from .connect import recurrences
 from .manuscript import MANUSCRIPTS, Manuscript
@@ -159,12 +159,20 @@ PAGE = """<!doctype html>
   </fieldset>
   <fieldset><legend>何を訊くか</legend>
     <label>モード
-      <select id="mode">
-        <option>発想</option><option>査読</option>
+      <select id="mode" onchange="window.modeChanged()">
+        <option>発想</option><option>査読</option><option>採点</option>
         <option>接続</option><option>連想</option>
       </select>
     </label>
-    <label>観点
+    <label id="severity-row">厳しさ
+      <select id="severity">
+        <option value="育成">育成 — 良い点を先に。評価3が「健闘」</option>
+        <option value="標準" selected>標準 — 良い点と問題点を同じ精度で</option>
+        <option value="厳格">厳格 — 卓越性だけを問う。評価1が商業水準</option>
+      </select>
+      <span class="note">査読と採点にだけ効く</span>
+    </label>
+    <label id="lens-row">観点
       <select id="lensmode">
         <option value="auto">原稿を測って選ぶ</option>
         <option value="random">くじ引き</option>
@@ -311,6 +319,7 @@ async function boot() {
   models = data.models; persona = data.persona; helps = data.help || {};
   fillModels("engine", "model"); fillModels("engine2", "model2");
   fillModels("engine3", "model3");
+  modeChanged();
   $("examples").innerHTML = (data.examples || []).map(text =>
     `<button onclick="$('note').value=${JSON.stringify(text)}">`
     + escape(text) + `</button>`).join("");
@@ -435,6 +444,18 @@ function lensWarn() {
   $("lenswarn").style.color = many ? "#c94" : "";
 }
 
+// モードによって効く欄が変わる。効かない欄を出したままにすると、
+// 設定したつもりのものが無視されて理由が分からなくなる
+const LENS_MODES = ["発想", "査読"];
+const SEVERITY_MODES = ["査読", "採点"];
+
+function modeChanged() {
+  const mode = $("mode").value;
+  $("lens-row").style.display = LENS_MODES.includes(mode) ? "" : "none";
+  $("severity-row").style.display =
+    SEVERITY_MODES.includes(mode) ? "" : "none";
+}
+
 function usePersona() { $("system").value = persona; }
 function clearTalk() { history = []; $("log").innerHTML = ""; }
 
@@ -534,6 +555,7 @@ def to_argv(body, path=None):
     argv = [str(path or resolve(body.get("name", ""))),
             "--words", body.get("words", "正規表現"),
             "--mode", body.get("mode", "発想"),
+            "--severity", body.get("severity", review.DEFAULT_SEVERITY),
             "--size", str(body.get("size", 6000)),
             "--chunk", str(body.get("chunk", 1)),
             "--lenses", str(body.get("lenses", 3))]
