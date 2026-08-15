@@ -119,6 +119,20 @@ LENSES = [
          "描写の細かい箇所と粗い箇所を挙げ、"
          "その配分が場面の重要さと合っているかを述べよ。"),
 
+    # --- 調子。実測「運命の九十分」で、18の観点のどれも
+    #     喜劇であることに触れなかった。可笑しみを扱う問いが無かったため
+    Lens("調子", "調子",
+         "地の文の調子が一定しているかを見よ。"
+         "ですます体とである体、体言止め、話しかけの混ざり方を挙げ、"
+         "混ざりが効いている箇所と、ただ揺れている箇所を分けよ。"),
+    Lens("笑い", "調子",
+         "可笑しみが生まれている箇所を挙げ、"
+         "何と何のずれで生じているのかを述べよ。"
+         "笑わせようとして滑っている箇所があれば、それも挙げよ。"),
+    Lens("落差", "調子",
+         "軽く書かれている箇所と、重く書かれている箇所を分けよ。"
+         "その落差が働いているか、それとも調子が定まっていないだけかを判じよ。"),
+
     # --- 具体の検査。抽象に逃げていないかを見る
     Lens("固有", "具体",
          "名前を与えられている事物と、"
@@ -152,7 +166,20 @@ NAME = re.compile(r"[一-龥]{1,3}(?:さん|くん|ちゃん|氏|先生|様)"
                   r"|[一-龥]{2,4}(?:駅|町|村|市|川|山|橋|通り|坂|寺)"
                   r"|[ァ-ヴ][ァ-ヴー]{3,}")
 FIRST_PERSON = re.compile(r"私|僕|俺|わたし|あたし")
-PAST_END = re.compile(r"(?:た|だ)[。！？]")
+
+# 出来事を語っている文の終わり方。
+# 「た。/だ。」だけを見ていたときは、である体の地の文を丸ごと落としていた。
+# 「運命の九十分」(である体)で出来事12%と出て、
+# 実際には語り通しているのに【分岐】(出来事を語っていない原稿に効く観点)が
+# 上位に来ていた。同じ7段落で測り直すと29%が71%になる
+PAST_END = re.compile(r"(?:た|だ|である|でした|ている|ていた|のだ|のである)"
+                      r"[。！？」]")
+
+# 地の文の調子。ですます体とである体が混ざっていないかを見る。
+# 「ました。」「でした。」は「た。」で終わるので、
+# 素直に書くとですます体まで である体として数えてしまう。先に除く
+POLITE_END = re.compile(r"(?:です|ます|ました|ません|でした|でしょう)[。！？]")
+PLAIN_END = re.compile(r"(?<!まし)(?<!でし)(?:である|だ|た|ない|る)[。！？]")
 SENSES = {
     "音": "音|響|鳴|静か|囁|声が|轟|きしむ|ざわ",
     "におい": "匂|臭|香",
@@ -164,12 +191,15 @@ RUT = ("宇宙", "神秘", "深淵", "無限", "静寂", "星", "幻想", "生�
        "永遠", "彼方", "象徴", "囁く")
 
 
+# 測る項目。ここだけを直せば、空の原稿を返す側も一緒に揃う
+MEASURES = ("名前", "会話", "出来事", "感覚", "一人称", "偏り", "混在", "轍")
+
+
 def survey(paragraphs):
     """観点を選ぶための実測。すべて0〜1に収める"""
     texts = [p.text for p in paragraphs]
     if not texts:
-        return {key: 0.5 for key in
-                ("名前", "会話", "出来事", "感覚", "一人称", "偏り", "轍")}
+        return {key: 0.5 for key in MEASURES}
     whole = "".join(texts)
     lengths = [len(t) for t in texts]
     # 段落の長さのばらつき(変動係数)。手持ちの4作で 0.81〜1.10 だったので、
@@ -178,6 +208,13 @@ def survey(paragraphs):
     raw = (statistics.pstdev(lengths) / statistics.mean(lengths)
            if len(lengths) > 1 and statistics.mean(lengths) else 0.0)
     spread = min(max((raw - 0.7) / 0.6, 0.0), 1.0)
+    # 地の文の調子の混ざり具合。少ないほうが全体の何割かを見る。
+    # ですます体とである体が半々なら1.0、片方だけなら0.0
+    polite = len(POLITE_END.findall(whole))
+    plain = len(PLAIN_END.findall(whole))
+    mixed = (min(polite, plain) / max(polite, plain, 1) if polite + plain
+             else 0.0)
+
     return {
         "名前": sum(1 for t in texts if NAME.search(t)) / len(texts),
         "会話": sum(1 for t in texts if t.startswith("「")) / len(texts),
@@ -187,6 +224,7 @@ def survey(paragraphs):
                   if re.search(pattern, whole)) / len(SENSES),
         "一人称": sum(1 for t in texts if FIRST_PERSON.search(t)) / len(texts),
         "偏り": spread,
+        "混在": min(mixed, 1.0),
         "轍": min(sum(whole.count(word) for word in RUT)
                  / max(len(whole), 1) * 200, 1.0),
     }
@@ -210,6 +248,8 @@ NEED = {
     "欠落": lambda s: 1 - s["感覚"],
     "順序": lambda s: s["出来事"],
     "一度きり": lambda s: 1 - s["名前"],
+    "調子": lambda s: s["混在"],          # 体が混ざっているほど効く
+    "落差": lambda s: s["混在"],
 }
 
 

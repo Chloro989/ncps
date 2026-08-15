@@ -40,6 +40,11 @@ aozora = Manuscript.load(FIXTURES / "aozora_akuma.txt")
 print("== 観点 ==")
 check("鍵が重複していない", len({l.key for l in LENSES}) == len(LENSES))
 check("群が複数ある", len(GROUPS) >= 5, str(GROUPS))
+# 実測「運命の九十分」(喜劇)で、18の観点のどれも可笑しみに触れなかった。
+# 調子を扱う問いが一つも無かったため
+check("調子を扱う観点がある", "調子" in GROUPS, str(GROUPS))
+check("可笑しみを扱う観点がある",
+      any(l.key == "笑い" for l in LENSES))
 check("すべて操作として書かれている",
       all(l.question.rstrip().endswith(("せよ。", "述べよ。", "挙げよ。",
                                         "示せ。", "問え。", "書け。",
@@ -108,6 +113,29 @@ events = Manuscript("\n\n".join([
 ]))
 check("出来事を語る割合を測る",
       survey(events.paragraphs)["出来事"] == 1.0)
+
+# 「た。/だ。」だけを見ていたときは、である体の地の文を丸ごと落としていた。
+# 「運命の九十分」(である体)で出来事12%と出て、語り通しているのに
+# 【分岐】(出来事を語っていない原稿に効く観点)が上位に来ていた
+dearu = Manuscript(
+    "　昔からそうだった。船に乗るのは女である。"
+    "陸で偉そうにしているのも女である。当たり前のことに理由は要らない。")
+check("である体も出来事として数える",
+      survey(dearu.paragraphs)["出来事"] == 1.0,
+      str(survey(dearu.paragraphs)["出来事"]))
+teiru = Manuscript("　雨が降っている。傘をさしている。誰も来ない。")
+check("ている体も数える", survey(teiru.paragraphs)["出来事"] == 1.0)
+
+print("\n== 地の文の調子 ==")
+polite = Manuscript("　雨が降りました。傘をさしました。歩き出しました。")
+plain = Manuscript("　雨が降った。傘をさした。歩き出した。")
+mixed = Manuscript("　雨が降りました。傘をさした。歩き出しました。彼は黙った。")
+check("片方だけなら混ざっていない", survey(polite.paragraphs)["混在"] == 0.0)
+check("である体だけでも混ざっていない", survey(plain.paragraphs)["混在"] == 0.0)
+check("混ざれば高く出る", survey(mixed.paragraphs)["混在"] > 0.5,
+      str(survey(mixed.paragraphs)["混在"]))
+check("混ざっていれば調子の観点が上がる",
+      needs(mixed.paragraphs)[0]["調子"] > needs(plain.paragraphs)[0]["調子"])
 
 rutty = Manuscript("　宇宙の神秘は永遠の深淵に似ている。静寂が彼方に。")
 check("常套語の濃さを測る", survey(rutty.paragraphs)["轍"] > 0.5,

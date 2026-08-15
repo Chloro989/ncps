@@ -241,6 +241,22 @@ def pick_lenses(chunk, args, rng):
     return lenses, "実測 " + describe(measured)
 
 
+LENS_ADVICE = 3
+
+
+def warn_lenses(count):
+    """観点を増やしすぎたら言う。
+
+    判明16 — 3Bモデルは指示を増やすと一つひとつが薄まる。禁止語6個では
+    効いたが8個にすると逆に増えた。実際に観点を8つ渡した論評が、
+    どの観点にも踏み込めないまま散らかった出力になった"""
+    if count > LENS_ADVICE:
+        print(f"# 注意: 観点が{count}個。{LENS_ADVICE}個までを勧める — "
+              "増やすと一つひとつが薄まることを実測している。"
+              "広く見たいなら --all で回すか、種を変えて何度か回すこと",
+              file=sys.stderr)
+
+
 def compose(manuscript, args, chunk=None, nudge=0):
     """モードに応じて (指示, 本文, 見せた段落, 添える説明) を作る。
 
@@ -412,6 +428,7 @@ def show_survey(manuscript, args):
         "感覚": "使われている感覚の種類",
         "一人称": "一人称を含む段落",
         "偏り": "段落の長さのばらつき",
+        "混在": "ですます体とである体の混ざり具合",
         "轍": "常套語(宇宙・神秘・永遠…)の濃さ",
     }
     for key, value in measured.items():
@@ -550,6 +567,18 @@ def run_verify(args, manuscript, answer, body_text):
     judged = solve(head, body, args.tokens)
     verdicts = verify.parse_verdicts(judged, findings)
     kept, dropped, unjudged = verify.sift(findings, verdicts)
+
+    # 一件も判定できなかったなら、検証は働かなかった。
+    # 全部の行に「判定されなかった」と貼るのは、
+    # 何も分からなかったことを分かったように見せるだけで害になる
+    if not kept and not dropped:
+        return answer, (
+            f"検証は働かなかった ({where} が判定の形で答えなかった)。"
+            f"元の答えをそのまま出す。\n"
+            f"  指摘{len(findings)}件を渡したが、読み取れた判定は0件。\n"
+            f"  観点を減らすか、検分を別の(より大きい)モデルにさせること。\n"
+            f"  返ってきた先頭: {judged.strip()[:60]}…")
+
     if not kept and not unjudged:
         return answer, ("検証: すべて捨てられた。"
                         "検分が働きすぎている疑いがあるので元の答えを残す\n"
@@ -602,6 +631,8 @@ def main(argv=None):
     if args.survey:
         show_survey(manuscript, args)
         return 0
+    if args.mode in ("発想", "査読") and not args.lens:
+        warn_lenses(args.lenses)
 
     jobs = tasks(manuscript, args)
 

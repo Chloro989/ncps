@@ -316,9 +316,21 @@ check("疑う側に立たせている", "粗を探す側" in judge.asked[0])
 check("すべて捨てられたら元の答えを残す", "もっと丁寧に" in answer)
 check("そのとき理由を述べる", "働きすぎている" in how, how[:60])
 
+# 一件も判定できなかったら、検証は働かなかったということ。
+# 全部の行に「判定されなかった」と貼るのは、何も分からなかったことを
+# 分かったように見せるだけで害になる。実際にそうなった
 (answer, how), _ = verify_with("読めない返事")
-check("判定が読めなければ指摘を残す", "灯りは伏線" in answer)
-check("判定されなかったと印を付ける", "判定されなかった" in answer)
+check("一件も判定できなければ元の答えをそのまま出す", answer == ANSWER)
+check("行に注記を貼らない", "判定されなかった" not in answer)
+check("働かなかったと伝える", "検証は働かなかった" in how, how[:60])
+check("何件渡して何件読めたかを出す", "読み取れた判定は0件" in how)
+check("どう直せばよいかを言う", "観点を減らす" in how)
+check("返事の頭を見せる", "読めない返事" in how)
+
+# 一部だけ読めたときは、読めなかったものを残して印を付ける
+(answer, how), _ = verify_with("1: 残す よい")
+check("一部でも判定できれば残った指摘を出す", "灯りは伏線" in answer)
+check("読めなかったものは印を付けて残す", "判定されなかった" in answer)
 
 (answer, how), _ = verify_with("1: 残す よい", "--verify-model", "別のモデル")
 args = critique.build_parser().parse_args(

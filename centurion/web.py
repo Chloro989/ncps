@@ -64,6 +64,7 @@ SURVEY_HELP = {
     "感覚": "使われている感覚の種類 (音・におい・手触り・温度・光 の5つ中)",
     "一人称": "私・僕・俺を含む段落の割合",
     "偏り": "段落の長さのばらつき",
+    "混在": "ですます体とである体の混ざり具合",
     "轍": "常套語 (宇宙・神秘・永遠…) の濃さ",
 }
 
@@ -170,7 +171,9 @@ PAGE = """<!doctype html>
         <option value="named">自分で決める</option>
       </select>
       <input id="lens" placeholder="視点,熱量" size="18">
-      <input id="lenses" type="number" value="3" min="1" max="8" size="2">個
+      <input id="lenses" type="number" value="3" min="1" max="8" size="2"
+             onchange="lensWarn()">個
+      <span id="lenswarn" class="note"></span>
     </label>
     <label>読ませる範囲
       <select id="chunk"></select>
@@ -413,6 +416,14 @@ async function write() {
           + ` ／ 禁止語: ${escape(one.banned.join("・") || "なし")}`
           + (one.diverted ? ` ／ 抑圧 ${one.diverted}箇所` : "") + `</p>`).join("");
   } finally { $("go3").disabled = false; $("busy3").textContent = ""; }
+}
+
+function lensWarn() {
+  const many = +$("lenses").value > 3;
+  $("lenswarn").textContent = many
+    ? "3個までを勧めます。増やすと一つひとつが薄まることを実測しています"
+    : "";
+  $("lenswarn").style.color = many ? "#c94" : "";
 }
 
 function usePersona() { $("system").value = persona; }
