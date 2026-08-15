@@ -245,5 +245,84 @@ try:
 finally:
     web.solver_for = real
 
+print("\n== 画面に出ているもの ==")
+page = get("/")
+for want, why in [
+        ("tab-make", "創作のタブ"),
+        ("manuscripts/", "置き場の名前をそのまま出す"),
+        ('rows="12"', "貼り付け欄を広く取る"),
+        ('rows="7"', "チャットの入力欄を広く取る"),
+        ('id="words"', "語の取り出し方を選べる"),
+        ('id="examples"', "補足の書き方の例"),
+        ("試作です", "創作が試作だと断る"),
+        ('id="save"', "添削を保存できる"),
+        ("abbr", "実測の意味を出す")]:
+    check(why, want in page, want)
+check("創作で抑圧が効く経路を明示する", "抑圧が効く" in page)
+check("効かない経路も明示する", "抑圧なし" in page)
+
+print("\n== 補足の例と実測の説明 ==")
+data = json.loads(get("/api/models"))
+check("補足の例を返す", len(data["examples"]) >= 5)
+check("例は具体的な迷いになっている",
+      all(len(text) > 15 for text in data["examples"]))
+check("実測の説明を返す", len(data["help"]) >= 6)
+check("測った項目に説明が付いている",
+      set(data["help"]) >= {"名前", "会話", "出来事", "感覚", "轍"},
+      str(sorted(data["help"])))
+
+print("\n== 語の取り出し方 ==")
+argv = web.to_argv({"name": "あっちゃぐり.txt", "words": "形態素"})
+check("画面の指定が引数に届く", argv[argv.index("--words") + 1] == "形態素")
+check("既定は正規表現",
+      web.to_argv({"name": "あっちゃぐり.txt"})[
+          web.to_argv({"name": "あっちゃぐり.txt"}).index("--words") + 1]
+      == "正規表現")
+
+print("\n== 添削の書き出し ==")
+data = post("/api/annotated", {"text": "　雨が降った。傘をさした。",
+                              "answer": "[0] 「雨が降った。傘をさした。」は良い。",
+                              "label": "試験", "engine": ""})
+check("題から名前を作る", data["name"].endswith("_添削.txt"), data.get("name"))
+check("記録が入る", "モード:" in data["text"])
+check("本文が入る", "雨が降った" in data["text"])
+check("照合の結果が入る", "引用の照合" in data["text"])
+
+print("\n== 創作 ==")
+data = post("/api/write", {"topic": "", "engine": "llama"})
+check("お題が無ければ断る", "error" in data, str(data)[:60])
+
+data = post("/api/write", {
+    "topic": "朝の匂いについて書いて", "engine": "llama",
+    "llama_url": "http://127.0.0.1:1/v1/chat/completions"})
+check("届かなければ理由を返す", "error" in data, str(data)[:60])
+
+
+class FakeWriter:
+    def chat(self, messages, max_tokens=0):
+        return "書きました。"
+
+
+real = web.solver_for
+web.solver_for = lambda args: FakeWriter()
+try:
+    data = web.run_write({"topic": "朝の匂いについて書いて", "engine": "llama",
+                          "times": 3, "fluid": True})
+    check("回数ぶん書かせる", len(data["written"]) == 3)
+    check("書き出しを付ける", data["written"][0]["text"].startswith("そうですね、"))
+    check("そのとき選んだ姿勢を返す", len(data["written"][0]["stance"]) == 2)
+    check("禁止語も返す", len(data["written"][0]["banned"]) == 3)
+    check("抑圧が効かないことを断る", "抑圧なし" in data["note"])
+
+    data = web.run_write({"topic": "お題", "engine": "llama", "fluid": False})
+    check("流動を切れる", data["written"][0]["stance"] == [])
+    check("そのとき固定の人格を使う",
+          "詩情と物語だけを愛する" in data["prompt"])
+
+    data = web.run_write({"topic": "お題", "engine": "llama", "times": 99})
+    check("回数に上限がある", len(data["written"]) <= 5)
+finally:
+    web.solver_for = real
+
 print(f"\n{passed}件通過 / {failed}件失敗")
 raise SystemExit(1 if failed else 0)
