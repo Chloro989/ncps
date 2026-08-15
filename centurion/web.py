@@ -138,9 +138,9 @@ PAGE = """<!doctype html>
 <header>
   <p class="mark"><span class="c">c</span>enturion</p>
   <nav>
-    <button id="tab-work" class="on" onclick="show('work')">添削</button>
-    <button id="tab-make" onclick="show('make')">創作</button>
-    <button id="tab-talk" onclick="show('talk')">チャット</button>
+    <button id="tab-work" class="on" onclick="window.show('work')">添削</button>
+    <button id="tab-make" onclick="window.show('make')">創作</button>
+    <button id="tab-talk" onclick="window.show('talk')">チャット</button>
   </nav>
   <span id="state" class="note"></span>
 </header>
@@ -151,7 +151,7 @@ PAGE = """<!doctype html>
   <fieldset><legend>原稿</legend>
     <label><code>manuscripts/</code> から
       <select id="doc"></select>
-      <button onclick="load()">読む</button>
+      <button onclick="window.load()">読む</button>
     </label>
     <label>または、ここに貼り付ける (貼ってあればこちらを使う)
       <textarea id="pasted" rows="12"
@@ -172,7 +172,7 @@ PAGE = """<!doctype html>
       </select>
       <input id="lens" placeholder="視点,熱量" size="18">
       <input id="lenses" type="number" value="3" min="1" max="8" size="2"
-             onchange="lensWarn()">個
+             onchange="window.lensWarn()">個
       <span id="lenswarn" class="note"></span>
     </label>
     <label>読ませる範囲
@@ -190,7 +190,7 @@ PAGE = """<!doctype html>
     <details><summary>書き方の例</summary><div id="examples"></div></details>
   </fieldset>
   <fieldset><legend>誰に解かせるか</legend>
-    <label><select id="engine" onchange="fillModels('engine','model')">
+    <label><select id="engine" onchange="window.fillModels('engine','model')">
       <option value="">問いを出すだけ (貼って使う)</option>
       <option value="llama">llama.cpp (手元・AMDでも動く)</option>
       <option value="api">Claude の API (鍵が要る)</option>
@@ -215,8 +215,8 @@ PAGE = """<!doctype html>
     <p class="note">別のモデルに検分させたほうが効く。
       同じモデルは自分の答えを通しがちになる。</p>
   </fieldset>
-  <button class="go" id="go" onclick="ask()">実行</button>
-  <button id="save" class="hide" onclick="saveAnnotated()">添削を保存</button>
+  <button class="go" id="go" onclick="window.ask()">実行</button>
+  <button id="save" class="hide" onclick="window.saveAnnotated()">添削を保存</button>
   <span id="busy" class="note"></span>
   <div id="out"></div>
 </section>
@@ -238,7 +238,7 @@ PAGE = """<!doctype html>
       回書かせる</label>
   </fieldset>
   <fieldset><legend>どう書かせるか</legend>
-    <label><select id="engine3" onchange="fillModels('engine3','model3')">
+    <label><select id="engine3" onchange="window.fillModels('engine3','model3')">
       <option value="llama">llama.cpp (抑圧なし)</option>
       <option value="api">Claude の API (抑圧なし)</option>
       <option value="run">transformers (抑圧が効く)</option>
@@ -250,7 +250,7 @@ PAGE = """<!doctype html>
     <label><input type="checkbox" id="suppress" checked>
       分岐点での抑圧 (transformers のときだけ効く)</label>
   </fieldset>
-  <button class="go" id="go3" onclick="write()">書かせる</button>
+  <button class="go" id="go3" onclick="window.runWrite()">書かせる</button>
   <span id="busy3" class="note"></span>
   <div id="made"></div>
 </section>
@@ -259,7 +259,7 @@ PAGE = """<!doctype html>
 <main id="pane-talk" class="wide hide">
 <section>
   <fieldset><legend>誰と話すか</legend>
-    <label><select id="engine2" onchange="fillModels('engine2','model2')">
+    <label><select id="engine2" onchange="window.fillModels('engine2','model2')">
       <option value="llama">llama.cpp (手元・AMDでも動く)</option>
       <option value="api">Claude の API (鍵が要る)</option>
       <option value="run">transformers (NVIDIAが要る)</option>
@@ -269,13 +269,13 @@ PAGE = """<!doctype html>
     <label>人格 (空なら素のまま)
       <textarea id="system" rows="4"
         placeholder="あなたはセンチュリオン。生粋の文系で…"></textarea></label>
-    <button onclick="usePersona()">センチュリオンの人格を入れる</button>
-    <button onclick="clearTalk()">会話を捨てる</button>
+    <button onclick="window.usePersona()">センチュリオンの人格を入れる</button>
+    <button onclick="window.clearTalk()">会話を捨てる</button>
   </fieldset>
   <div id="log"></div>
   <textarea id="say" rows="7" placeholder="ここに書いて Ctrl+Enter で送る"
-            onkeydown="if(event.ctrlKey&&event.key==='Enter')talk()"></textarea>
-  <p><button class="go" id="go2" onclick="talk()">送る</button>
+            onkeydown="if(event.ctrlKey&&event.key==='Enter')window.talk()"></textarea>
+  <p><button class="go" id="go2" onclick="window.talk()">送る</button>
      <span id="busy2" class="note"></span></p>
 </section>
 </main>
@@ -297,8 +297,11 @@ function escape(text) {
 }
 
 function fillModels(from, into) {
+  // into は model / model2 / model3。選択欄は model-pick / -pick2 / -pick3。
+  // ここを三項で書いていたとき、model3 がチャット側の欄を書き換えていた
   const list = models[$(from).value] || [];
-  const pick = $(into === "model" ? "model-pick" : "model-pick2");
+  const pick = $("model-pick" + into.slice("model".length));
+  if (!pick) return;
   pick.innerHTML = "<option value=''>選ぶ…</option>"
     + list.map(m => `<option>${escape(m)}</option>`).join("");
 }
@@ -394,7 +397,11 @@ async function saveAnnotated() {
   URL.revokeObjectURL(link.href);
 }
 
-async function write() {
+// 名前を write にしてはいけない。インラインの onclick は名前を
+// 要素→document→window の順に探すので、document.write が先に見つかり、
+// 引数なしで呼ばれてページが白紙になる。
+// 同じ罠を避けるため、画面から呼ぶものはすべて window. を付けて呼んでいる
+async function runWrite() {
   const topic = $("topic").value.trim();
   if (!topic) { alert("お題を書いてください"); return; }
   $("go3").disabled = true; $("busy3").textContent = "書いています…";
@@ -415,6 +422,8 @@ async function write() {
           + `<p class="note">姿勢: ${escape(one.stance.join(" / ") || "なし")}`
           + ` ／ 禁止語: ${escape(one.banned.join("・") || "なし")}`
           + (one.diverted ? ` ／ 抑圧 ${one.diverted}箇所` : "") + `</p>`).join("");
+  } catch (problem) {
+    $("made").innerHTML = `<div class="tip bad">${escape(String(problem))}</div>`;
   } finally { $("go3").disabled = false; $("busy3").textContent = ""; }
 }
 
@@ -638,8 +647,10 @@ def run_write(body):
     written = []
 
     if engine == "run":
-        from .generate import Centurion
-        writer = Centurion(model_name=body.get("model") or None,
+        from .generate import MODEL_NAME, Centurion
+        # 空の欄をそのまま渡すと model_name=None で読み込みに行って落ちる
+        writer = Centurion(model_name=(body.get("model") or "").strip()
+                           or MODEL_NAME,
                            suppress=suppress, fluid=fluid)
         for _ in range(times):
             reply = writer.say(topic, remember=False)

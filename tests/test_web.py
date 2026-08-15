@@ -10,6 +10,7 @@ manuscripts/ の外を開かせないこと、本文をそのまま HTML に流�
 
 import html
 import json
+import re
 import sys
 import threading
 import time
@@ -271,6 +272,23 @@ check("実測の説明を返す", len(data["help"]) >= 6)
 check("測った項目に説明が付いている",
       set(data["help"]) >= {"名前", "会話", "出来事", "感覚", "轍"},
       str(sorted(data["help"])))
+
+print("\n== 画面から呼ぶ関数の名前 ==")
+# インラインの onclick は名前を 要素→document→window の順に探す。
+# document.write が実在するので、write() と名付けると
+# 引数なしの document.write() が呼ばれてページが白紙になる。実際になった
+bare = re.findall(r'on(?:click|change)="(?!window\.)([A-Za-z_]\w*)\(', page)
+check("画面からの呼び出しは window. を付ける", not bare, str(bare))
+check("白紙になる名前を使っていない", 'onclick="write(' not in page)
+check("書かせる釦は別名を呼ぶ", "window.runWrite()" in page)
+
+# model3 の選択欄がチャット側を書き換えていた
+check("創作の選択欄がある", 'id="model-pick3"' in page)
+check("選択欄は三つとも別々",
+      len(re.findall(r'id="model-pick\d?"', page)) == 3,
+      str(re.findall(r'id="model-pick\d?"', page)))
+check("創作の解かせ方が自分の欄を埋めに行く",
+      "window.fillModels('engine3','model3')" in page)
 
 print("\n== 検証 ==")
 for want, why in [('id="verify"', "検分の切り替えがある"),
