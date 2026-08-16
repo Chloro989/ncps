@@ -9,8 +9,10 @@ manuscripts/ の外を開かせないこと、本文をそのまま HTML に流�
 """
 
 import html
+import io
 import json
 import re
+import socket
 import sys
 import threading
 import time
@@ -313,6 +315,40 @@ check("省いても既定が入る",
       web.to_argv({"name": "あっちゃぐり.txt"})[
           web.to_argv({"name": "あっちゃぐり.txt"}).index("--severity") + 1]
       == "標準")
+
+print("\n== 相手が先に切ったとき ==")
+# 画面を読み込み直すと途中の求めが打ち切られる。そこへ書こうとして
+# ConnectionAbortedError (WinError 10053) が出るのは異常ではない。
+# 素通しにすると、開き直すたびに長い traceback が流れて
+# 本当の不具合が埋もれる
+noise = io.StringIO()
+saved_err = sys.stderr
+sys.stderr = noise
+try:
+    for _ in range(4):
+        raw = socket.create_connection(("127.0.0.1", PORT), timeout=5)
+        raw.sendall(b"GET /api/models HTTP/1.1\r\nHost: x\r\n\r\n")
+        raw.close()          # 返事を待たずに切る
+    time.sleep(0.8)
+finally:
+    sys.stderr = saved_err
+check("切られても黙って終わる", "Traceback" not in noise.getvalue(),
+      noise.getvalue()[-200:])
+check("その後もサーバは応じる", json.loads(get("/api/cache")) is not None)
+
+# 走査は数秒だけ覚えておく。画面を一度開くと
+# /api/models と /api/llama が続けて来るので、素直に書くと何度も走る
+web.rescan()
+began = time.perf_counter()
+web.scanned()
+cold = time.perf_counter() - began
+began = time.perf_counter()
+web.scanned()
+warm = time.perf_counter() - began
+check("二度目の走査は覚えている", warm < cold or warm < 0.001,
+      f"{cold * 1000:.1f}ms 対 {warm * 1000:.1f}ms")
+check("捨てられる", (web.rescan() or web._scan["結果"]) is None)
+
 
 print("\n== 画面の script が壊れていないか ==")
 # 文字列の途中に本物の改行が入ると、その一行で script 全体が死ぬ。

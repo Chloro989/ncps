@@ -28,6 +28,7 @@ import json
 import re
 import sys
 import threading
+import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -937,6 +938,8 @@ def start_llama(body):
     except (RuntimeError, FileNotFoundError, OSError) as problem:
         return {"error": str(problem)}
 
+    # 落としてきたかもしれないので、覚えていた走査は捨てる
+    rescan()
     # 立ち上がりを待つ。大きいモデルは読み込みだけで数分かかる
     ready, spent = launcher.running.wait_ready()
     state = launcher.running.status()
@@ -947,6 +950,38 @@ def start_llama(body):
                           or ("起動したが窓口が応じない。"
                               "下のログを見ること"))
     return state
+
+
+# 置き場の走査と、サーバへの問い合わせを何秒覚えておくか。
+# 走査は HuggingFace のキャッシュ全体を掘るので、ファイルが多いと重い。
+# 画面を一度開くだけで何度も走らせる理由がない
+SCAN_KEEP = 5.0
+_scan = {"時刻": 0.0, "結果": None}
+_scan_lock = threading.Lock()
+
+
+def scanned():
+    """落ちている GGUF。数秒だけ覚えておく。
+
+    画面を開くと /api/models と /api/llama が続けて来る。
+    素直に書くと走査が3回走り、ファイル数によっては画面が固まって
+    読み込み直され、途中の求めが打ち切られる"""
+    now = time.monotonic()
+    with _scan_lock:
+        if _scan["結果"] is not None and now - _scan["時刻"] < SCAN_KEEP:
+            return _scan["結果"]
+    found = ([str(place) for place in critique.model_folders()],
+             [critique.describe_downloaded(path)
+              for path in critique.downloaded_models()])
+    with _scan_lock:
+        _scan.update({"時刻": now, "結果": found})
+    return found
+
+
+def rescan():
+    """次の求めで走査し直す。モデルを起こした直後などに使う"""
+    with _scan_lock:
+        _scan["結果"] = None
 
 
 def llama_state():
@@ -960,26 +995,27 @@ def llama_state():
     # 立っているのに「立っていない」と表示することになる
     where = (launcher.running.url() if launcher.running.alive()
              else critique.LLAMA_URL)
+    places, files = scanned()
     state = launcher.running.status()
     state.update({
         "loaded": critique.Llama(url=where).loaded(),
         "url": where,
-        "cache": "、".join(str(place)
-                          for place in critique.model_folders())
-                 or "見つからない",
-        "downloaded": [critique.describe_downloaded(path)
-                       for path in critique.downloaded_models()],
+        "cache": "、".join(places) or "見つからない",
+        "downloaded": files,
     })
     return state
 
 
-def model_lists():
+def model_lists(state=None):
     """選択欄に出す名前。llama.cpp の分は実測で置き換える。
 
     載っているモデルを先頭にする — 立っているサーバはそれしか配らないので、
-    他を選んでも送った名前は無視される"""
+    他を選んでも送った名前は無視される。
+
+    state を渡せば作り直さない。画面を開くと同じものが何度も要るので、
+    一度こしらえて使い回す"""
     lists = {key: list(value) for key, value in critique.KNOWN_MODELS.items()}
-    state = llama_state()
+    state = state or llama_state()
     live = []
     if state["loaded"]:
         live.append(state["loaded"])
@@ -1048,6 +1084,22 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(raw)
 
+    def log_message(self, form, *args):
+        """一件ごとの記録は出さない。論評の進み具合が流れて見えなくなる"""
+
+    def handle_one_request(self):
+        """相手が先に切ったときは黙って終わる。
+
+        画面を読み込み直すと、途中の求めは打ち切られる。そこへ
+        書き込もうとすると ConnectionAbortedError (WinError 10053) が出る。
+        これは異常ではなく、相手がもう聞いていないというだけのこと。
+        素通しにすると、画面を開き直すたびに長い traceback が流れて、
+        本当の不具合が埋もれる"""
+        try:
+            return super().handle_one_request()
+        except (ConnectionError, TimeoutError):
+            self.close_connection = True
+
     def do_GET(self):
         route = urlparse(self.path)
         try:
@@ -1060,16 +1112,23 @@ class Handler(BaseHTTPRequestHandler):
             if route.path == "/api/cache":
                 return self.reply(cache.state())
             if route.path == "/api/models":
-                return self.reply({"models": model_lists(),
+                # 一度こしらえて両方に使う。
+                # 別々に呼ぶと問い合わせと走査が二重に走る
+                state = llama_state()
+                return self.reply({"models": model_lists(state),
                                    "persona": persona(),
                                    "examples": NOTE_EXAMPLES,
                                    "help": SURVEY_HELP,
-                                   "llama": llama_state()})
+                                   "llama": state})
             if route.path == "/api/manuscript":
                 query = parse_qs(route.query)
                 return self.reply(structure(
                     {"name": query.get("name", [""])[0]},
                     int(query.get("size", ["6000"])[0])))
+        except (ConnectionError, TimeoutError):
+            # 相手はもう聞いていない。返す先が無いので何もしない
+            self.close_connection = True
+            return None
         except Exception as problem:
             return self.reply({"error": str(problem)})
         self.send_error(404)
@@ -1090,6 +1149,10 @@ class Handler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length) or b"{}")
         try:
             return self.reply(works[route](body))
+        except (ConnectionError, TimeoutError):
+            # 論評は数分かかる。待ちきれずに画面を閉じられることがある
+            self.close_connection = True
+            return None
         except SystemExit as stop:
             return self.reply({"error": str(stop)})
         except Exception as problem:
