@@ -34,10 +34,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 # server は serve() の中の変数と紛れるので別名にする
-from . import critique, review, rubric
+from . import cache, critique, review, rubric
 from . import server as launcher
 from .answer import MARK_BAD, MARK_OK, annotate, attach, find_quotes
-from .connect import recurrences
+from .connect import recurrences, use_morphology
 from .manuscript import MANUSCRIPTS, Manuscript
 from .prompts import FIXED_PROMPT, PREFILL, build_fluid
 from .review import needs
@@ -140,12 +140,53 @@ PAGE = """<!doctype html>
 <header>
   <p class="mark"><span class="c">c</span>enturion</p>
   <nav>
+    <button id="tab-serve" onclick="window.show('serve')">サーバー</button>
     <button id="tab-work" class="on" onclick="window.show('work')">添削</button>
     <button id="tab-make" onclick="window.show('make')">創作</button>
     <button id="tab-talk" onclick="window.show('talk')">チャット</button>
   </nav>
   <span id="state" class="note"></span>
 </header>
+
+<main id="pane-serve" class="wide hide">
+<section>
+  <fieldset><legend>llama-server を起こす</legend>
+    <p id="llama-now" class="note">調べています…</p>
+    <label>載せるモデル
+      <select id="wake-model" onchange="window.wakeHint()"></select></label>
+    <label>または名前を直に書く (手元に無ければ落としに行く)
+      <input id="wake-name" placeholder="unsloth/Qwen3.8-27B-GGUF:Q4_K_M"
+             size="46" oninput="window.wakeHint()"></label>
+    <label>GPUに載せる層
+      <input id="wake-ngl" type="number" value="99" min="0" max="999" size="4">
+      <span class="note">99 で全部。VRAMに収まらないなら減らす</span></label>
+    <label>CPUに置くエキスパート
+      <input id="wake-moe" type="number" value="0" min="0" max="999" size="4">
+      <span class="note">MoE (名前に A3B など) にだけ効く。0 で使わない</span></label>
+    <label>文脈の長さ
+      <input id="wake-ctx" type="number" value="12288" step="1024" size="7">
+      <span class="note">採点は約1万トークン要る</span></label>
+    <label><input type="checkbox" id="wake-fa" checked>
+      Flash Attention と KVキャッシュの8bit化 (VRAMが約半分)</label>
+    <label>ポート
+      <input id="wake-port" type="number" value="8080" size="6"></label>
+    <p id="wake-hint" class="note"></p>
+    <button class="go" id="wake-go" onclick="window.wake()">起こす</button>
+    <button onclick="window.sleepLlama()">止める</button>
+    <span id="wake-busy" class="note"></span>
+    <details><summary>起動ログ</summary>
+      <pre class="prompt" id="wake-log">まだ起こしていません</pre></details>
+  </fieldset>
+  <fieldset><legend>覚えているもの</legend>
+    <p class="note">一度読んだ原稿と、その解析を覚えておきます。
+      同じ原稿を読み直すとき、反復語の探索をやり直しません。
+      ファイルを書き直せば更新時刻が変わるので、自動で読み直します。</p>
+    <p id="cache-state" class="note">調べています…</p>
+    <button onclick="window.forgetAll()">忘れる</button>
+    <span id="cache-busy" class="note"></span>
+  </fieldset>
+</section>
+</main>
 
 <main id="pane-work">
 <aside id="side" class="note">原稿を選ぶか、貼り付けて「読む」を押す</aside>
@@ -198,33 +239,6 @@ PAGE = """<!doctype html>
       <textarea id="note" rows="3"
         placeholder="狙いや訊きたいこと。ここが具体的だと答えが変わる"></textarea></label>
     <details><summary>書き方の例</summary><div id="examples"></div></details>
-  </fieldset>
-  <fieldset><legend>llama-server を起こす</legend>
-    <p id="llama-now" class="note">調べています…</p>
-    <label>載せるモデル
-      <select id="wake-model" onchange="window.wakeHint()"></select></label>
-    <label>または名前を直に書く (手元に無ければ落としに行く)
-      <input id="wake-name" placeholder="unsloth/Qwen3.8-27B-GGUF:Q4_K_M"
-             size="46" oninput="window.wakeHint()"></label>
-    <label>GPUに載せる層
-      <input id="wake-ngl" type="number" value="99" min="0" max="999" size="4">
-      <span class="note">99 で全部。VRAMに収まらないなら減らす</span></label>
-    <label>CPUに置くエキスパート
-      <input id="wake-moe" type="number" value="0" min="0" max="999" size="4">
-      <span class="note">MoE (名前に A3B など) にだけ効く。0 で使わない</span></label>
-    <label>文脈の長さ
-      <input id="wake-ctx" type="number" value="12288" step="1024" size="7">
-      <span class="note">採点は約1万トークン要る</span></label>
-    <label><input type="checkbox" id="wake-fa" checked>
-      Flash Attention と KVキャッシュの8bit化 (VRAMが約半分)</label>
-    <label>ポート
-      <input id="wake-port" type="number" value="8080" size="6"></label>
-    <p id="wake-hint" class="note"></p>
-    <button class="go" id="wake-go" onclick="window.wake()">起こす</button>
-    <button onclick="window.sleepLlama()">止める</button>
-    <span id="wake-busy" class="note"></span>
-    <details><summary>起動ログ</summary>
-      <pre class="prompt" id="wake-log">まだ起こしていません</pre></details>
   </fieldset>
   <fieldset><legend>誰に解かせるか</legend>
     <label><select id="engine" onchange="window.fillModels('engine','model')">
@@ -326,7 +340,7 @@ let current = null, models = {}, persona = "", history = [];
 let helps = {}, lastAnswer = null;
 
 function show(which) {
-  for (const name of ["work", "make", "talk"]) {
+  for (const name of ["serve", "work", "make", "talk"]) {
     $("pane-" + name).classList.toggle("hide", name !== which);
     $("tab-" + name).classList.toggle("on", name === which);
   }
@@ -361,6 +375,7 @@ async function boot() {
         return `<option value="${escape(name)}">${escape(line)}</option>`;
       }).join("");
   drawLlama(await (await fetch("/api/llama")).json());
+  drawCache();
   $("examples").innerHTML = (data.examples || []).map(text =>
     `<button onclick="$('note').value=${JSON.stringify(text)}">`
     + escape(text) + `</button>`).join("");
@@ -546,8 +561,7 @@ function drawLlama(state) {
     now.textContent = "llama-server は立っていません";
   }
   if (state.log && state.log.length) {
-    $("wake-log").textContent = state.log.join("
-");
+    $("wake-log").textContent = state.log.join("\\n");
   }
   if (state.command) {
     $("wake-log").title = state.command;
@@ -588,6 +602,22 @@ async function sleepLlama() {
   drawLlama(state);
   $("wake-busy").textContent = "止めました";
   await boot();
+}
+
+async function drawCache() {
+  const state = await (await fetch("/api/cache")).json();
+  const rows = Object.entries(state).map(([what, row]) =>
+    `${escape(what)}: ${row["覚えている数"]}件 `
+    + `(当たり ${row["当たり"]} / 外れ ${row["外れ"]})`);
+  $("cache-state").textContent = rows.join(" ／ ");
+}
+
+async function forgetAll() {
+  $("cache-busy").textContent = "忘れています…";
+  await fetch("/api/cache/forget", {method: "POST",
+    headers: {"content-type": "application/json"}, body: "{}"});
+  $("cache-busy").textContent = "忘れました";
+  await drawCache();
 }
 
 function usePersona() { $("system").value = persona; }
@@ -655,15 +685,49 @@ def resolve(name):
 def obtain(body):
     """置き場のファイルか、貼り付けられた本文か。
     貼ってあればそちらを使う — その場で試したいときに、
-    いちいちファイルに保存させるのは手間が多い"""
+    いちいちファイルに保存させるのは手間が多い。
+
+    一度読んだものは覚えておく。ファイルは更新時刻で見分けるので、
+    書き直せば読み直される"""
     pasted = (body.get("text") or "").strip()
     if pasted:
-        return Manuscript(pasted, title="貼り付けた原稿")
-    return Manuscript.load(resolve(body.get("name", "")))
+        key = ("貼り付け", cache.digest(pasted))
+        found, _ = cache.manuscripts.fetch(
+            key, lambda: Manuscript(pasted, title="貼り付けた原稿"))
+        return found
+    path = resolve(body.get("name", ""))
+    key = cache.file_key(path)
+    found, _ = cache.manuscripts.fetch(key, lambda: Manuscript.load(path))
+    return found
+
+
+def structure_key(body, size):
+    """解析の鍵。塊の大きさと語の取り出し方で結果が変わる"""
+    pasted = (body.get("text") or "").strip()
+    who = (("貼り付け", cache.digest(pasted)) if pasted
+           else cache.file_key(resolve(body.get("name", ""))))
+    return who + (size, body.get("words", "正規表現"))
 
 
 def structure(body, size):
+    """原稿の姿。覚えていればそれを返す。
+
+    重いのは反復語の探索で、形態素解析を使うとさらに重い。
+    一文字も変わっていない原稿に毎回それを払う理由がない"""
+    found, remembered = cache.structures.fetch(
+        structure_key(body, size), lambda: build_structure(body, size))
+    answer = dict(found)
+    answer["cached"] = remembered
+    return answer
+
+
+def build_structure(body, size):
     manuscript = obtain(body)
+    if body.get("words") == "形態素":
+        try:
+            use_morphology(True)
+        except ImportError:
+            pass          # 無ければ正規表現のまま。断りは論評のときに出る
     chunks = manuscript.chunks(size=size, overlap=1)
     score, measured = needs(manuscript.paragraphs)
     found = recurrences(manuscript)
@@ -993,6 +1057,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(listing())
             if route.path == "/api/llama":
                 return self.reply(llama_state())
+            if route.path == "/api/cache":
+                return self.reply(cache.state())
             if route.path == "/api/models":
                 return self.reply({"models": model_lists(),
                                    "persona": persona(),
@@ -1014,6 +1080,8 @@ class Handler(BaseHTTPRequestHandler):
                  "/api/write": run_write, "/api/annotated": annotated_text,
                  "/api/llama/start": start_llama,
                  "/api/llama/stop": lambda body: launcher.running.stop(),
+                 "/api/cache/forget": lambda body: (cache.forget()
+                                                    or cache.state()),
                  "/api/manuscript": lambda body: structure(
                      body, int(body.get("size", 6000)))}
         if route not in works:

@@ -314,6 +314,120 @@ check("省いても既定が入る",
           web.to_argv({"name": "あっちゃぐり.txt"}).index("--severity") + 1]
       == "標準")
 
+print("\n== 画面の script が壊れていないか ==")
+# 文字列の途中に本物の改行が入ると、その一行で script 全体が死ぬ。
+# 画面は真っ白にならず、ただ何も動かなくなるので気づきにくい。
+# 実際に log.join("\n") が改行そのものに化けて、
+# window.show is not a function になった
+
+
+def unclosed(source):
+    """改行をまたいだ文字列を探す。(行番号, その行) の並びを返す。
+
+    バッククォートは複数行にまたがってよいので、そこは数えない"""
+    problems = []
+    quote_char = None
+    line_number = 1
+    index = 0
+    while index < len(source):
+        letter = source[index]
+        if letter == "\\" and quote_char:
+            index += 2
+            continue
+        if letter == "\n":
+            if quote_char in ('"', "'"):
+                problems.append((line_number,
+                                 source.splitlines()[line_number - 1]))
+                quote_char = None
+            line_number += 1
+        elif quote_char:
+            if letter == quote_char:
+                quote_char = None
+        elif letter in ('"', "'", "`"):
+            quote_char = letter
+        elif letter == "/" and source[index:index + 2] == "//":
+            # 行注釈。中の引用符を数えない
+            while index < len(source) and source[index] != "\n":
+                index += 1
+            continue
+        index += 1
+    return problems
+
+
+script = page.split("<script>")[-1].split("</script>")[0]
+broken = unclosed(script)
+check("文字列が改行をまたいでいない", not broken,
+      "; ".join(f"{n}行目 {line.strip()[:50]}" for n, line in broken[:3]))
+
+# 画面から呼ぶ関数が、実際に定義されているか。
+# 呼び出しだけあって定義が無いと、押した時に初めて壊れる
+called = set(re.findall(r'onclick="window\.(\w+)\(', page))
+called |= set(re.findall(r'onchange="window\.(\w+)\(', page))
+defined = set(re.findall(r"^(?:async )?function (\w+)", script, re.M))
+check("画面から呼ぶ関数がすべて定義されている", called <= defined,
+      str(sorted(called - defined)))
+
+
+print("\n== サーバーの面 ==")
+check("サーバーのタブがある", 'id="tab-serve"' in page)
+check("サーバーの面がある", 'id="pane-serve"' in page)
+check("添削より左に置く",
+      page.index('id="tab-serve"') < page.index('id="tab-work"'))
+check("面の切り替えに入っている", '"serve", "work"' in page)
+check("最初は添削を出す", 'id="tab-work" class="on"' in page)
+check("起こす欄は添削から出ている",
+      page.index('id="pane-serve"') < page.index("llama-server を起こす")
+      < page.index('id="pane-work"'))
+
+print("\n== 覚えているもの ==")
+# 一度読んだ原稿を覚える。反復語の探索が重く、
+# 形態素解析を使うとさらに重い
+web.cache.forget()
+body = {"name": names[0], "size": 6000}
+first = post("/api/manuscript", body)
+check("一度目は覚えていない", first.get("cached") is False, str(first)[:70])
+second = post("/api/manuscript", body)
+check("二度目は覚えている", second.get("cached") is True)
+check("中身は変わらない",
+      first["summary"] == second["summary"]
+      and first["recurrences"] == second["recurrences"])
+
+# 塊の大きさを変えれば別の解析。覚えていたものを使い回すと
+# 違う切り方の答えが返る
+other = post("/api/manuscript", {"name": names[0], "size": 800})
+check("塊の大きさが変われば読み直す", other.get("cached") is False)
+check("切り方も実際に変わる", other["chunks"] != first["chunks"],
+      f'{other["chunks"]} 対 {first["chunks"]}')
+
+# 語の取り出し方でも反復語が変わる
+web.cache.forget()
+post("/api/manuscript", body)
+again = post("/api/manuscript", {"name": names[0], "size": 6000,
+                                 "words": "形態素"})
+check("語の取り出し方が変われば読み直す", again.get("cached") is False)
+
+pasted = post("/api/manuscript", {"text": PASTED, "size": 6000})
+check("貼り付けも覚える",
+      post("/api/manuscript", {"text": PASTED,
+                               "size": 6000}).get("cached") is True,
+      str(pasted)[:60])
+check("違う貼り付けは読み直す",
+      post("/api/manuscript", {"text": PASTED + "　もう一段落。",
+                               "size": 6000}).get("cached") is False)
+
+state = json.loads(get("/api/cache"))
+check("覚えている数を訊ける", state["原稿"]["覚えている数"] >= 1, str(state))
+check("当たりの数も出る", state["解析"]["当たり"] >= 1, str(state))
+
+emptied = post("/api/cache/forget", {})
+check("忘れさせられる", emptied["原稿"]["覚えている数"] == 0, str(emptied))
+check("忘れた後は読み直す",
+      post("/api/manuscript", body).get("cached") is False)
+
+check("画面に忘れる釦がある", "window.forgetAll()" in page)
+check("覚えている数を画面に出す", 'id="cache-state"' in page)
+
+
 print("\n== llama-server を画面から起こす ==")
 for want, why in [('id="wake-model"', "手元のモデルから選べる"),
                   ('id="wake-name"', "名前を直に書ける"),

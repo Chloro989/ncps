@@ -115,7 +115,8 @@ manuscripts/ に置いた原稿はファイル名だけで呼べる。
 
 TESTS = ["test_centurion", "test_manuscript", "test_review",
          "test_rubric", "test_connect", "test_answer", "test_verify",
-         "test_critique", "test_server", "test_web", "test_main"]
+         "test_critique", "test_server", "test_cache", "test_web",
+         "test_main"]
 
 
 def cmd_read(rest):

@@ -119,6 +119,7 @@ print("\n== 起こして止める ==")
 # 本物の llama-server は起こさない。python を身代わりにして、
 # 抱える・様子を見る・止める の筋道だけを確かめる
 idle = server.Launcher()
+idle.port = 8124            # 本物が立っていても引きずられないように
 check("最初は立っていない", not idle.alive())
 check("最初は窓口も答えない", not idle.ready())
 check("様子を訊ける", idle.status()["running"] is False)
@@ -132,6 +133,9 @@ fake.process = subprocess.Popen(
     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
     encoding="utf-8", bufsize=1)
 fake.model = "身代わり"
+# 既定のポートを使うと、本物の llama-server が立っているときに
+# そちらへ訊きに行って「窓口が答えた」ことになる。空いた口を指す
+fake.port = 8123
 import threading
 threading.Thread(target=fake._drain, args=(fake.process.stdout,),
                  daemon=True).start()
