@@ -314,6 +314,61 @@ check("省いても既定が入る",
           web.to_argv({"name": "あっちゃぐり.txt"}).index("--severity") + 1]
       == "標準")
 
+print("\n== llama-server を画面から起こす ==")
+for want, why in [('id="wake-model"', "手元のモデルから選べる"),
+                  ('id="wake-name"', "名前を直に書ける"),
+                  ('id="wake-ngl"', "層の数を決められる"),
+                  ('id="wake-moe"', "エキスパートの数を決められる"),
+                  ('id="wake-ctx"', "文脈の長さを決められる"),
+                  ('id="wake-port"', "ポートを決められる"),
+                  ('id="wake-log"', "起動ログを見られる"),
+                  ("window.wake()", "起こす釦がある"),
+                  ("window.sleepLlama()", "止める釦がある")]:
+    check(why, want in page, want)
+check("MoE かどうかを助言する", "function wakeHint()" in page)
+
+# 起こしてよいものの線引きは server 側にあるが、
+# 画面からの入口でも断れないと意味がない
+for odd in ["a; whoami", "悪い名前", ""]:
+    answer = web.start_llama({"model": odd})
+    check(f"{odd!r} は起こさない", "error" in answer, str(answer)[:60])
+check("断る理由を伝える",
+      "組織/名前" in web.start_llama({"model": "変"})["error"])
+
+# 起こしたポートへ論評を送る。既定へ送ると別のモデルに届く
+saved = web.launcher.running
+try:
+    class Pretending:
+        model = "身代わり"
+
+        def alive(self):
+            return True
+
+        def url(self):
+            return "http://127.0.0.1:9999/v1/chat/completions"
+
+        def status(self):
+            return {"running": True, "model": self.model, "log": [],
+                    "command": "", "since": None, "exit": None,
+                    "port": 9999, "url": self.url(), "binary": ""}
+
+    web.launcher.running = Pretending()
+    argv = web.to_argv({"name": "あっちゃぐり.txt", "engine": "llama"})
+    check("起こした窓口へ送る",
+          argv[argv.index("--llama-url") + 1]
+          == "http://127.0.0.1:9999/v1/chat/completions",
+          str(argv))
+    told = web.to_argv({"name": "あっちゃぐり.txt", "engine": "llama",
+                        "llama_url": "http://127.0.0.1:7777/v1/x"})
+    check("画面から指定があればそちらを優先する",
+          told[told.index("--llama-url") + 1] == "http://127.0.0.1:7777/v1/x")
+finally:
+    web.launcher.running = saved
+
+check("立っていなければ窓口を足さない",
+      "--llama-url" not in web.to_argv({"name": "あっちゃぐり.txt", "engine": "llama"}))
+
+
 print("\n== 検証 ==")
 for want, why in [('id="verify"', "検分の切り替えがある"),
                   ("verify-with", "検分させる相手を選べる"),

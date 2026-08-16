@@ -40,6 +40,7 @@ if str(HERE) not in sys.path:
 USAGE = """センチュリオン
 
   web                  ブラウザから使う (127.0.0.1 にだけ開く)
+                       llama-server の起動・停止もここからできる
   read   [原稿]        章・段落・切り出し・反復の一覧を見る
   ask    [原稿]        原稿を読ませる (--mode 発想/査読/採点/接続/連想)
   check  答え [原稿]   答えの段落番号が実在するかを検査する
@@ -114,7 +115,7 @@ manuscripts/ に置いた原稿はファイル名だけで呼べる。
 
 TESTS = ["test_centurion", "test_manuscript", "test_review",
          "test_rubric", "test_connect", "test_answer", "test_verify",
-         "test_critique", "test_web", "test_main"]
+         "test_critique", "test_server", "test_web", "test_main"]
 
 
 def cmd_read(rest):

@@ -33,7 +33,9 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+# server は serve() の中の変数と紛れるので別名にする
 from . import critique, review, rubric
+from . import server as launcher
 from .answer import MARK_BAD, MARK_OK, annotate, attach, find_quotes
 from .connect import recurrences
 from .manuscript import MANUSCRIPTS, Manuscript
@@ -197,6 +199,33 @@ PAGE = """<!doctype html>
         placeholder="狙いや訊きたいこと。ここが具体的だと答えが変わる"></textarea></label>
     <details><summary>書き方の例</summary><div id="examples"></div></details>
   </fieldset>
+  <fieldset><legend>llama-server を起こす</legend>
+    <p id="llama-now" class="note">調べています…</p>
+    <label>載せるモデル
+      <select id="wake-model" onchange="window.wakeHint()"></select></label>
+    <label>または名前を直に書く (手元に無ければ落としに行く)
+      <input id="wake-name" placeholder="unsloth/Qwen3.8-27B-GGUF:Q4_K_M"
+             size="46" oninput="window.wakeHint()"></label>
+    <label>GPUに載せる層
+      <input id="wake-ngl" type="number" value="99" min="0" max="999" size="4">
+      <span class="note">99 で全部。VRAMに収まらないなら減らす</span></label>
+    <label>CPUに置くエキスパート
+      <input id="wake-moe" type="number" value="0" min="0" max="999" size="4">
+      <span class="note">MoE (名前に A3B など) にだけ効く。0 で使わない</span></label>
+    <label>文脈の長さ
+      <input id="wake-ctx" type="number" value="12288" step="1024" size="7">
+      <span class="note">採点は約1万トークン要る</span></label>
+    <label><input type="checkbox" id="wake-fa" checked>
+      Flash Attention と KVキャッシュの8bit化 (VRAMが約半分)</label>
+    <label>ポート
+      <input id="wake-port" type="number" value="8080" size="6"></label>
+    <p id="wake-hint" class="note"></p>
+    <button class="go" id="wake-go" onclick="window.wake()">起こす</button>
+    <button onclick="window.sleepLlama()">止める</button>
+    <span id="wake-busy" class="note"></span>
+    <details><summary>起動ログ</summary>
+      <pre class="prompt" id="wake-log">まだ起こしていません</pre></details>
+  </fieldset>
   <fieldset><legend>誰に解かせるか</legend>
     <label><select id="engine" onchange="window.fillModels('engine','model')">
       <option value="">問いを出すだけ (貼って使う)</option>
@@ -324,6 +353,14 @@ async function boot() {
   fillModels("engine3", "model3");
   modeChanged();
   showLlama(data.llama);
+  const wake = $("wake-model");
+  const have = (data.llama && data.llama.downloaded) || [];
+  wake.innerHTML = "<option value=''>手元にあるものから選ぶ…</option>"
+    + have.map(line => {
+        const name = line.split(" (")[0];
+        return `<option value="${escape(name)}">${escape(line)}</option>`;
+      }).join("");
+  drawLlama(await (await fetch("/api/llama")).json());
   $("examples").innerHTML = (data.examples || []).map(text =>
     `<button onclick="$('note').value=${JSON.stringify(text)}">`
     + escape(text) + `</button>`).join("");
@@ -480,6 +517,79 @@ function showLlama(state) {
   where.forEach(node => { node.innerHTML = lines.join("<br>"); });
 }
 
+// ----- llama-server を起こす -----
+
+function wakeName() {
+  return ($("wake-name").value.trim() || $("wake-model").value || "");
+}
+
+function wakeHint() {
+  const name = wakeName();
+  const moe = /A\d+B|-MoE|moe/i.test(name);
+  const hint = $("wake-hint");
+  if (!name) { hint.textContent = ""; return; }
+  hint.textContent = moe
+    ? "MoE らしい名前です。層は99のまま、CPUに置くエキスパートを増やすと"
+      + " VRAM が空きます (24 あたりから)"
+    : "密なモデルらしい名前です。CPUに置くエキスパートは効きません。"
+      + " 収まらないなら層を減らしてください";
+}
+
+function drawLlama(state) {
+  if (!state) return;
+  const now = $("llama-now");
+  if (state.running || state.loaded) {
+    const what = state.model || state.loaded;
+    now.innerHTML = `いま <b>${escape(what)}</b> が立っています`
+      + (state.since ? ` (${escape(state.since)} から)` : "");
+  } else {
+    now.textContent = "llama-server は立っていません";
+  }
+  if (state.log && state.log.length) {
+    $("wake-log").textContent = state.log.join("
+");
+  }
+  if (state.command) {
+    $("wake-log").title = state.command;
+  }
+}
+
+async function wake() {
+  const model = wakeName();
+  if (!model) { alert("モデルを選ぶか、名前を書いてください"); return; }
+  $("wake-go").disabled = true;
+  $("wake-busy").textContent = "起こしています… (大きいモデルは数分かかります)";
+  try {
+    const state = await (await fetch("/api/llama/start", {
+      method: "POST", headers: {"content-type": "application/json"},
+      body: JSON.stringify({model,
+        ngl: +$("wake-ngl").value, cpuMoe: +$("wake-moe").value,
+        ctx: +$("wake-ctx").value, port: +$("wake-port").value,
+        flash: $("wake-fa").checked,
+        quantizeCache: $("wake-fa").checked})})).json();
+    drawLlama(state);
+    if (state.error) {
+      $("wake-busy").textContent = "起こせませんでした";
+      alert(state.error);
+    } else {
+      $("wake-busy").textContent = `立ちました (${state.waited}秒)`;
+      await boot();
+    }
+  } finally {
+    $("wake-go").disabled = false;
+  }
+}
+
+async function sleepLlama() {
+  $("wake-busy").textContent = "止めています…";
+  const state = await (await fetch("/api/llama/stop", {
+    method: "POST", headers: {"content-type": "application/json"},
+    body: "{}"})).json();
+  drawLlama(state);
+  $("wake-busy").textContent = "止めました";
+  await boot();
+}
+
 function usePersona() { $("system").value = persona; }
 function clearTalk() { history = []; $("log").innerHTML = ""; }
 
@@ -594,8 +704,13 @@ def to_argv(body, path=None):
     engine = body.get("engine", "")
     if engine in ("llama", "api", "run"):
         argv.append(f"--{engine}")
-    if body.get("llama_url", "").strip():
-        argv += ["--llama-url", body["llama_url"].strip()]
+    # 画面から起こしたものがあれば、そちらの窓口を使う。
+    # ポートを変えて起こしたのに既定へ送ると、届かないか別のモデルに届く
+    told = body.get("llama_url", "").strip()
+    if not told and launcher.running.alive():
+        told = launcher.running.url()
+    if told:
+        argv += ["--llama-url", told]
     if body.get("verify"):
         argv.append("--verify")
         if body.get("verifyWith") in ("api", "llama", "run"):
@@ -660,8 +775,13 @@ def run_chat(body):
     argv = ["_", f"--{engine}"] if engine in ("llama", "api", "run") else ["_"]
     if body.get("model", "").strip():
         argv += ["--model", body["model"].strip()]
-    if body.get("llama_url", "").strip():
-        argv += ["--llama-url", body["llama_url"].strip()]
+    # 画面から起こしたものがあれば、そちらの窓口を使う。
+    # ポートを変えて起こしたのに既定へ送ると、届かないか別のモデルに届く
+    told = body.get("llama_url", "").strip()
+    if not told and launcher.running.alive():
+        told = launcher.running.url()
+    if told:
+        argv += ["--llama-url", told]
     args = critique.build_parser().parse_args(argv)
 
     messages = [turn for turn in body.get("messages", [])
@@ -725,22 +845,68 @@ def run_write(body):
             "prompt": prompt, "stance": stance, "banned": banned}
 
 
+def allowed_models():
+    """起こしてよいモデルの名前。手元で見つけたものだけ"""
+    return {critique.hf_name(path)
+            for path in critique.downloaded_models()}
+
+
+def start_llama(body):
+    """画面からの求めで llama-server を起こす。
+
+    何を起こせるかは launcher.check_model が決める。
+    ここでは引数を組まない — 組み立ては server.build_command 一箇所に
+    寄せてあり、殻を挟まず並びのまま渡す"""
+    model = (body.get("model") or "").strip()
+    refusal = launcher.check_model(model, allowed_models())
+    if refusal:
+        return {"error": refusal}
+    try:
+        state = launcher.running.start(
+            model,
+            port=body.get("port", 8080),
+            ngl=body.get("ngl", 99),
+            ctx=body.get("ctx", 12288),
+            cpu_moe=body.get("cpuMoe", 0),
+            flash=bool(body.get("flash", True)),
+            quantize_cache=bool(body.get("quantizeCache", True)))
+    except (RuntimeError, FileNotFoundError, OSError) as problem:
+        return {"error": str(problem)}
+
+    # 立ち上がりを待つ。大きいモデルは読み込みだけで数分かかる
+    ready, spent = launcher.running.wait_ready()
+    state = launcher.running.status()
+    state["ready"] = ready
+    state["waited"] = round(spent)
+    if not ready:
+        state["error"] = (launcher.trouble(state["log"])
+                          or ("起動したが窓口が応じない。"
+                              "下のログを見ること"))
+    return state
+
+
 def llama_state():
     """立っている llama-server と、手元に落ちている GGUF の様子。
 
     書き並べた一覧では、実際に何が使えるのか分からない。
     サーバに訊けば載っているものが分かるし、置き場を見れば
     落としてあるものが分かる。どちらも実測である"""
-    loaded = critique.Llama(url=critique.LLAMA_URL).loaded()
-    folders = critique.model_folders()
-    files = critique.downloaded_models()
-    return {
-        "loaded": loaded,
-        "url": critique.LLAMA_URL,
-        "cache": "、".join(str(place) for place in folders)
+    # 画面から起こしたものがあれば、その窓口を見る。
+    # ポートを変えて起こしたのに既定を見に行くと、
+    # 立っているのに「立っていない」と表示することになる
+    where = (launcher.running.url() if launcher.running.alive()
+             else critique.LLAMA_URL)
+    state = launcher.running.status()
+    state.update({
+        "loaded": critique.Llama(url=where).loaded(),
+        "url": where,
+        "cache": "、".join(str(place)
+                          for place in critique.model_folders())
                  or "見つからない",
-        "downloaded": [critique.describe_downloaded(path) for path in files],
-    }
+        "downloaded": [critique.describe_downloaded(path)
+                       for path in critique.downloaded_models()],
+    })
+    return state
 
 
 def model_lists():
@@ -825,6 +991,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.reply(PAGE, "text/html")
             if route.path == "/api/manuscripts":
                 return self.reply(listing())
+            if route.path == "/api/llama":
+                return self.reply(llama_state())
             if route.path == "/api/models":
                 return self.reply({"models": model_lists(),
                                    "persona": persona(),
@@ -844,6 +1012,8 @@ class Handler(BaseHTTPRequestHandler):
         route = urlparse(self.path).path
         works = {"/api/ask": run_ask, "/api/chat": run_chat,
                  "/api/write": run_write, "/api/annotated": annotated_text,
+                 "/api/llama/start": start_llama,
+                 "/api/llama/stop": lambda body: launcher.running.stop(),
                  "/api/manuscript": lambda body: structure(
                      body, int(body.get("size", 6000)))}
         if route not in works:
@@ -872,6 +1042,12 @@ def serve(port=PORT, open_page=True):
         print("\n止めました", file=sys.stderr)
     finally:
         server.server_close()
+        # 画面から起こした llama-server を置き去りにしない。
+        # 残ると次回ポートが塞がり、原因が分かりにくい
+        if launcher.running.alive():
+            print(f"起こした llama-server ({launcher.running.model}) "
+                  "も止めます", file=sys.stderr)
+            launcher.running.stop()
     return 0
 
 
