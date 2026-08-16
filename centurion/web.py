@@ -206,6 +206,7 @@ PAGE = """<!doctype html>
     </select>
     <select id="model-pick" onchange="$('model').value=this.value"></select>
     <input id="model" placeholder="モデル名を直に書く" size="26"></label>
+    <p class="note llama-state">調べています…</p>
   </fieldset>
   <fieldset><legend>検証 (出てきた指摘をもう一度検分させる)</legend>
     <label><input type="checkbox" id="verify"> 検分にかける
@@ -253,6 +254,7 @@ PAGE = """<!doctype html>
     </select>
     <select id="model-pick3" onchange="$('model3').value=this.value"></select>
     <input id="model3" placeholder="モデル名を直に書く" size="26"></label>
+    <p class="note llama-state">調べています…</p>
     <label><input type="checkbox" id="fluid" checked>
       流動プロンプト (生成ごとに姿勢2つと禁止語3つを選び直す)</label>
     <label><input type="checkbox" id="suppress" checked>
@@ -274,6 +276,7 @@ PAGE = """<!doctype html>
     </select>
     <select id="model-pick2" onchange="$('model2').value=this.value"></select>
     <input id="model2" placeholder="モデル名を直に書く" size="26"></label>
+    <p class="note llama-state">調べています…</p>
     <label>人格 (空なら素のまま)
       <textarea id="system" rows="4"
         placeholder="あなたはセンチュリオン。生粋の文系で…"></textarea></label>
@@ -320,6 +323,7 @@ async function boot() {
   fillModels("engine", "model"); fillModels("engine2", "model2");
   fillModels("engine3", "model3");
   modeChanged();
+  showLlama(data.llama);
   $("examples").innerHTML = (data.examples || []).map(text =>
     `<button onclick="$('note').value=${JSON.stringify(text)}">`
     + escape(text) + `</button>`).join("");
@@ -454,6 +458,26 @@ function modeChanged() {
   $("lens-row").style.display = LENS_MODES.includes(mode) ? "" : "none";
   $("severity-row").style.display =
     SEVERITY_MODES.includes(mode) ? "" : "none";
+}
+
+// 何が使えるのかを実測で見せる。書き並べた一覧では、
+// 落としてあるものも、いま載っているものも分からない
+function showLlama(state) {
+  if (!state) return;
+  const where = document.querySelectorAll(".llama-state");
+  const lines = [];
+  if (state.loaded) {
+    lines.push(`llama-server に載っているのは <b>${escape(state.loaded)}</b>`);
+  } else {
+    lines.push(`llama-server が立っていない (${escape(state.url)})`);
+  }
+  if (state.downloaded && state.downloaded.length) {
+    lines.push(`落としてある GGUF ${state.downloaded.length}件: `
+      + state.downloaded.map(escape).join("、"));
+  } else {
+    lines.push(`落としてある GGUF は無い (${escape(state.cache)})`);
+  }
+  where.forEach(node => { node.innerHTML = lines.join("<br>"); });
 }
 
 function usePersona() { $("system").value = persona; }
@@ -701,6 +725,43 @@ def run_write(body):
             "prompt": prompt, "stance": stance, "banned": banned}
 
 
+def llama_state():
+    """立っている llama-server と、手元に落ちている GGUF の様子。
+
+    書き並べた一覧では、実際に何が使えるのか分からない。
+    サーバに訊けば載っているものが分かるし、置き場を見れば
+    落としてあるものが分かる。どちらも実測である"""
+    loaded = critique.Llama(url=critique.LLAMA_URL).loaded()
+    folders = critique.model_folders()
+    files = critique.downloaded_models()
+    return {
+        "loaded": loaded,
+        "url": critique.LLAMA_URL,
+        "cache": "、".join(str(place) for place in folders)
+                 or "見つからない",
+        "downloaded": [critique.describe_downloaded(path) for path in files],
+    }
+
+
+def model_lists():
+    """選択欄に出す名前。llama.cpp の分は実測で置き換える。
+
+    載っているモデルを先頭にする — 立っているサーバはそれしか配らないので、
+    他を選んでも送った名前は無視される"""
+    lists = {key: list(value) for key, value in critique.KNOWN_MODELS.items()}
+    state = llama_state()
+    live = []
+    if state["loaded"]:
+        live.append(state["loaded"])
+    for line in state["downloaded"]:
+        name = line.split(" (")[0]
+        if name not in live:
+            live.append(name)
+    if live:
+        lists["llama"] = live
+    return lists
+
+
 def annotated_text(body):
     """添削ファイルの中身をそのまま返す。ブラウザから保存させる"""
     manuscript = obtain(body)
@@ -765,10 +826,11 @@ class Handler(BaseHTTPRequestHandler):
             if route.path == "/api/manuscripts":
                 return self.reply(listing())
             if route.path == "/api/models":
-                return self.reply({"models": critique.KNOWN_MODELS,
+                return self.reply({"models": model_lists(),
                                    "persona": persona(),
                                    "examples": NOTE_EXAMPLES,
-                                   "help": SURVEY_HELP})
+                                   "help": SURVEY_HELP,
+                                   "llama": llama_state()})
             if route.path == "/api/manuscript":
                 query = parse_qs(route.query)
                 return self.reply(structure(

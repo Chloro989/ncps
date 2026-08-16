@@ -66,7 +66,7 @@ python main.py web
 | `check` | 回答の検査と添削ファイル出力 | 不要 |
 | `write` | 小説生成 (試作) | 必須 |
 | `prompts` | プロンプトの文面を `prompts/` に書き出す | 不要 |
-| `test` | テスト実行 (725 件) | 不要 |
+| `test` | テスト実行 (749 件) | 不要 |
 
 `read` / `ask` / `check` は同一のパーサを共有する。
 
@@ -157,6 +157,52 @@ python main.py ask 原稿.txt --llama --model LFM2.5-1.2B-JP
 **制約:** `llama-server` は起動時に読み込んだモデル 1 つのみを提供する。
 `--model` はサーバに送信されるが**無視される**ため、記録用のラベルとして機能する。
 複数モデルを使う場合はポートを分けてサーバを複数起動する。
+
+### 手元のモデルを調べる
+
+```bash
+python main.py ask --models
+```
+
+```
+llama-server (http://127.0.0.1:8080/v1/chat/completions)
+  載っているのは unsloth/Qwen3.8-27B-GGUF:Q4_K_M
+
+置き場
+  C:\Users\darki\.cache\huggingface\hub
+
+落ちている GGUF 5件
+  → unsloth/Qwen3.8-27B-GGUF:Q4_K_M (15.9GB)
+    unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_M (20.6GB)
+    LiquidAI/LFM2.5-1.2B-JP-202606-GGUF:Q4_K_M (0.7GB)
+```
+
+`→` が現在サーバに載っているもの。表示名はそのまま `-hf` に渡せる。
+
+- **載っているモデル** — `/v1/models` に問い合わせて取得。
+  `--model` はサーバに無視されるため、これが唯一の確実な情報源
+- **落ちている GGUF** — キャッシュを走査。書き並べた一覧ではない
+- `mmproj-*.gguf` (画像入力用) と分割ファイルの 2 個目以降は除外
+
+キャッシュの場所は環境変数と OS から判定する。
+
+| 優先 | 場所 |
+|---|---|
+| 1 | `~/.cache/huggingface/hub` (現行の llama.cpp) |
+| 2 | `$HF_HOME/hub` |
+| 3 | `$LLAMA_CACHE` |
+| 4 | `%LOCALAPPDATA%\llama.cpp` / `~/.cache/llama.cpp` (旧版) |
+
+ブラウザ UI のモデル選択欄も同じ情報で埋まる。
+
+添削ファイルの `モデル` 欄には、サーバに問い合わせた名前を記録する。
+`--model` の申告と食い違う場合は両方を残す。
+
+```
+# モデル: unsloth/Qwen3.8-27B-GGUF:Q4_K_M (llama.cpp が申告) ※--model には Qwen と書かれていた
+```
+
+問い合わせに失敗した場合は `(llama.cpp・名前は未確認)` と記録する。
 
 ### モデルの指定
 
@@ -272,7 +318,7 @@ python main.py ask 原稿.txt --run --model LiquidAI/LFM2-1.2B
 | 実行方法 | 記録 |
 |---|---|
 | `--api` | `claude-sonnet-5 (API)` |
-| `--llama` | `LFM2.5-1.2B-JP (llama.cpp)` |
+| `--llama` | `unsloth/Qwen3.8-27B-GGUF:Q4_K_M (llama.cpp が申告)` |
 | `--run` | `Qwen/Qwen2.5-3B-Instruct (手元)` |
 | `check` | `不明 (外で解かせた答え)` |
 | `check --model NAME` | `NAME (申告)` |

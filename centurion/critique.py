@@ -27,6 +27,7 @@ import argparse
 import json
 import os
 import random
+import re
 import sys
 import time
 import urllib.error
@@ -69,9 +70,112 @@ LLAMA_URL = "http://127.0.0.1:8080/v1/chat/completions"
 # --tokens 4000 の生成に30分では足りないことがある
 LLAMA_TIMEOUT = 3600
 
+# 分割された GGUF の連番。…-00002-of-00003.gguf の 00002 を取る
+SPLIT_PART = re.compile(r"-(\d{5})-of-\d{5}\.gguf$")
+
+
+def model_folders():
+    """GGUF が置かれうる場所。llama.cpp の版によって違う。
+
+    -hf で落としたものは、いまの llama.cpp では HuggingFace の hub
+    キャッシュに入る。古い版は独自の llama.cpp フォルダを使っていた。
+    片方だけを見ると、落ちているのに「何も無い」と表示することになる。
+    実際に外して、載っているモデルを見つけられなかった"""
+    places = [Path.home() / ".cache" / "huggingface" / "hub"]
+    told = os.environ.get("HF_HOME", "").strip()
+    if told:
+        places.append(Path(told) / "hub")
+    told = os.environ.get("LLAMA_CACHE", "").strip()
+    if told:
+        places.append(Path(told))
+    elif sys.platform == "win32":
+        root = os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData"
+                                                  / "Local")
+        places.append(Path(root) / "llama.cpp")
+    elif sys.platform == "darwin":
+        places.append(Path.home() / "Library" / "Caches" / "llama.cpp")
+    else:
+        root = os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")
+        places.append(Path(root) / "llama.cpp")
+    return [place for place in places if place.exists()]
+
+
+# HuggingFace の hub は models--組織--名前 という形で掘る。
+# ここから -hf に渡せるリポジトリ名を戻せる
+HF_FOLDER = re.compile(r"^models--(.+?)--(.+)$")
+# ファイル名の末尾に付く量子化の名前。-hf の :Q4_K_M に使う
+QUANT = re.compile(r"-(UD-)?(I?Q\d[A-Z_0-9]*|BF16|F16|F32)"
+                   r"(?:-\d{5}-of-\d{5})?\.gguf$", re.IGNORECASE)
+
+
+def repo_of(path):
+    """HuggingFace のキャッシュの中なら、リポジトリ名を戻す"""
+    for parent in path.parents:
+        found = HF_FOLDER.match(parent.name)
+        if found:
+            return f"{found.group(1)}/{found.group(2)}"
+    return ""
+
+
+def quant_of(path):
+    """ファイル名から量子化の名前を取る"""
+    found = QUANT.search(path.name)
+    if not found:
+        return ""
+    return (found.group(1) or "") + found.group(2)
+
+
+def downloaded_models(folders=None):
+    """手元に落ちている GGUF を並べる。
+
+    書き並べた一覧ではなく実際の中身を見る。
+    何を持っているか覚えていなくても選べるようにするため。
+
+    分割ファイル (…-00002-of-00003.gguf) は1つ目だけを出す。
+    llama.cpp は1つ目を渡せば残りを自分で見つける"""
+    if folders is None:
+        folders = model_folders()
+    elif isinstance(folders, (str, Path)):
+        folders = [Path(folders)]
+    found, seen = [], set()
+    for folder in folders:
+        folder = Path(folder)
+        if not folder.exists():
+            continue
+        for path in sorted(folder.rglob("*.gguf")):
+            part = SPLIT_PART.search(path.name)
+            if part and part.group(1) != "00001":
+                continue
+            if path.name.startswith("mmproj"):
+                continue      # 画像を読むための付属品で、単体では使えない
+            if path.name in seen:
+                continue
+            seen.add(path.name)
+            found.append(path)
+    return found
+
+
+def hf_name(path):
+    """-hf にそのまま渡せる形。リポジトリが分からなければファイル名"""
+    repo, quant = repo_of(path), quant_of(path)
+    if repo:
+        return f"{repo}:{quant}" if quant else repo
+    return path.stem
+
+
+def describe_downloaded(path):
+    """一覧に出す一行。-hf に渡せる名前と大きさ"""
+    try:
+        size = path.stat().st_size / (1024 ** 3)
+    except OSError:
+        return hf_name(path)
+    return f"{hf_name(path)} ({size:.1f}GB)"
+
+
 # 画面の選択肢に出す名前。ここに無いものも自由に打ち込めるので、
 # 一覧は「よく使うものの近道」であって制限ではない。
-# llama.cpp の欄は記録用の名札で、実際に何が載っているかはサーバ側で決まる
+# llama.cpp の欄は、立っているサーバに訊いた名前と、
+# 手元に落ちている GGUF で埋める (KNOWN_MODELS の分は控えの見本)
 KNOWN_MODELS = {
     "api": ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5-20251001"],
     "llama": ["LFM2.5-1.2B-JP-202606", "LFM2.5-2.6B", "LFM2-8B-A1B",
@@ -136,6 +240,11 @@ class Llama:
         self.model = model or "local"
         self.url = url
         self.timeout = timeout
+        # まだ一度も解いていない印。0.0 を印に使うと、往復が速すぎて
+        # 時計の刻み(Windows では約15ms)に埋もれたときに
+        # 「解いていない」と誤って判じる
+        self.elapsed = None
+        self.produced = None
 
     def __call__(self, head, body, max_tokens=MAX_TOKENS):
         return self.chat([{"role": "system", "content": head},
@@ -153,7 +262,10 @@ class Llama:
             headers={"content-type": "application/json"})
         started = time.monotonic()
         try:
-            with urllib.request.urlopen(request, self.timeout) as response:
+            # timeout はキーワードで渡すこと。位置引数の2番目は data で、
+            # そこに秒数を渡すと本文として送ろうとして TypeError になる
+            with urllib.request.urlopen(request,
+                                        timeout=self.timeout) as response:
                 answer = json.load(response)
         except urllib.error.HTTPError as problem:
             detail = problem.read().decode("utf-8", "replace")[:400]
@@ -181,14 +293,34 @@ class Llama:
         self.produced = (answer.get("usage") or {}).get("completion_tokens")
         return answer["choices"][0]["message"]["content"]
 
+    def loaded(self, timeout=3):
+        """サーバに載っているモデルの名前を訊く。
+
+        llama-server は起動時に読み込んだ1つだけを配り、
+        こちらが送る model の値は無視する。つまり --model に書いた名前は
+        ただの自己申告で、実際とずれていても誰も気づかない。
+        窓口に直接訊けば、本当に載っているものが分かる。
+
+        訊けなければ空文字。記録が嘘になるより、空のほうがよい"""
+        endpoint = self.url.rsplit("/chat/completions", 1)[0] + "/models"
+        try:
+            with urllib.request.urlopen(endpoint, timeout=timeout) as answer:
+                found = json.load(answer)
+        except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+            return ""
+        names = [row.get("id", "") for row in found.get("data", [])]
+        return names[0] if names else ""
+
     def speed(self):
         """直前の生成の速さ。層の割り振りを決める材料になる"""
-        if not getattr(self, "elapsed", 0):
+        if self.elapsed is None:
             return ""
         line = f"{self.elapsed:.0f}秒"
-        if self.produced:
+        if self.produced and self.elapsed > 0:
             line += (f"で{self.produced}トークン "
                      f"({self.produced / self.elapsed:.1f} tok/s)")
+        elif self.produced:
+            line += f"で{self.produced}トークン"
         return line
 
 
@@ -449,6 +581,9 @@ def build_parser():
                              f"(既定 {LLAMA_TIMEOUT})。"
                              "GPUに載りきらないモデルを一部CPUで回すと"
                              "生成が桁違いに遅くなるので、そのときは延ばす")
+    parser.add_argument("--models", action="store_true",
+                        help="手元に落ちている GGUF と、立っている"
+                             " llama-server に載っているモデルを並べる")
     parser.add_argument("--llama-url", default=LLAMA_URL,
                         help=f"llama-server の窓口 (既定 {LLAMA_URL})")
     parser.add_argument("--all", action="store_true",
@@ -592,13 +727,55 @@ def run_check(manuscript, args):
     return 1 if bad else 0
 
 
+def show_models(args):
+    """何が使えるのかを実測で並べる。
+
+    書き並べた一覧では、落としてあるものも、いま載っているものも
+    分からない。置き場を見て、サーバに訊く"""
+    loaded = Llama(url=args.llama_url).loaded()
+    print(f"llama-server ({args.llama_url})")
+    if loaded:
+        print(f"  載っているのは {loaded}")
+    else:
+        print("  立っていないか、名前を答えない")
+
+    places = model_folders()
+    print()
+    print("置き場")
+    for place in places:
+        print(f"  {place}")
+    if not places:
+        print("  見つからない (まだ何も落としていない)")
+
+    found = downloaded_models()
+    print()
+    print(f"落ちている GGUF {len(found)}件")
+    for path in found:
+        mark = "→" if loaded and hf_name(path) == loaded else " "
+        print(f"  {mark} {describe_downloaded(path)}")
+    if found:
+        print()
+        print("使うには、別の窓でサーバを立て直すこと:")
+        print(f"  llama-server -hf {hf_name(found[0])} --port 8080 -ngl 99")
+    return 0
+
+
 def used_model(args):
     """どのモデルに解かせたかを一行で。
     貼り付けた答えを検査するときは、こちらには分からない"""
     if args.api:
         return f"{args.model or API_MODEL} (API)"
     if args.llama:
-        return f"{args.model or '不明'} (llama.cpp)"
+        # サーバに直接訊いた名前があればそれを使う。--model は自己申告で、
+        # llama-server はその値を無視するので、書いた名前と載っている
+        # モデルが違っていても誰も気づかない。実際に取り違えて記録していた
+        real = getattr(args, "llama_loaded", "")
+        if real:
+            same = args.model and args.model not in real
+            return (f"{real} (llama.cpp が申告)"
+                    + (f" ※--model には {args.model} と書かれていた"
+                       if same else ""))
+        return f"{args.model or '不明'} (llama.cpp・名前は未確認)"
     if args.run:
         return f"{args.model or LOCAL_MODEL} (手元)"
     if args.model:
@@ -827,6 +1004,8 @@ def main(argv=None):
                 "形態素解析には fugashi と unidic-lite が要る。\n"
                 "  pip install fugashi unidic-lite")
         print("# 語の取り出しに形態素解析を使う", file=sys.stderr)
+    if args.models:
+        return show_models(args)
     manuscript = Manuscript.load(args.path)
 
     if args.check:
@@ -863,10 +1042,14 @@ def main(argv=None):
         print(f"# {model} に訊いています…", file=sys.stderr)
         solve = Api(model)
     elif args.llama:
-        print(f"# {args.llama_url} の llama-server に訊いています…",
-              file=sys.stderr)
         solve = Llama(args.model or "", args.llama_url,
                       args.llama_timeout)
+        # 何が載っているかをサーバに訊く。--model は無視されるので、
+        # ここで訊かないと記録が自己申告のままになる
+        args.llama_loaded = solve.loaded()
+        aboard = args.llama_loaded or "名前を答えない"
+        print(f"# {args.llama_url} の llama-server に訊いています "
+              f"(載っているのは {aboard})", file=sys.stderr)
     else:
         model = args.model or LOCAL_MODEL
         print(f"# {model} を読み込んでいます…", file=sys.stderr)

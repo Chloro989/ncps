@@ -10,9 +10,12 @@
 """
 
 import io
+import json
 import os
 import sys
+import threading
 from contextlib import redirect_stdout
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -252,7 +255,11 @@ check("APIの既定モデルを残す",
       critique.API_MODEL in records_for("--api")["モデル"])
 check("手元なら 手元 と分かる", "(手元)" in records_for("--run")["モデル"])
 check("llama.cpp ならそう分かる",
-      "(llama.cpp)" in records_for("--llama")["モデル"])
+      "llama.cpp" in records_for("--llama")["モデル"])
+# サーバに訊けなかったのに名前を断定すると、記録が嘘になる
+check("訊いていない名前は未確認と断る",
+      "未確認" in records_for("--llama", "--model", "LFM2.5")["モデル"],
+      records_for("--llama", "--model", "LFM2.5")["モデル"])
 check("llama.cpp でもモデル名を残せる",
       "LFM2.5-1.2B-JP" in
       records_for("--llama", "--model", "LFM2.5-1.2B-JP")["モデル"])
@@ -342,6 +349,140 @@ check("待ち時間を延ばせる",
 check("解き手に待ち時間が渡る",
       critique.Llama("x", "http://127.0.0.1:1/v1", 7200).timeout == 7200)
 check("速さは解く前には出ない", critique.Llama().speed() == "")
+
+# 属性を見るだけの試験では足りなかった。urlopen の2番目の位置引数は
+# data なので、そこへ秒数を渡すと本文として送ろうとして TypeError になる。
+# 実際に一度喋らせないと捕まらない
+class Pretend(BaseHTTPRequestHandler):
+    def do_POST(self):
+        sent = json.loads(self.rfile.read(
+            int(self.headers["content-length"])))
+        body = json.dumps({
+            "choices": [{"message": {"content":
+                                     f"届いた: {len(sent['messages'])}通"}}],
+            "usage": {"completion_tokens": 120},
+        }).encode("utf-8")
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *ignored):
+        pass
+
+
+pretend = HTTPServer(("127.0.0.1", 0), Pretend)
+threading.Thread(target=pretend.serve_forever, daemon=True).start()
+where = f"http://127.0.0.1:{pretend.server_address[1]}/v1/chat/completions"
+try:
+    talker = critique.Llama("試験", where, 30)
+    said = talker("指示", "本文")
+    check("llama-server と実際にやり取りできる", "届いた: 2通" == said, said)
+    # 時計の刻みより速く返ることがある (Windows で約15ms)。
+    # 0.0 と「解いていない」を混ぜないよう、印は None にしてある
+    check("かかった時間を覚えている", talker.elapsed is not None
+          and talker.elapsed >= 0, repr(talker.elapsed))
+    check("生成したトークン数を覚えている", talker.produced == 120)
+    check("速さを一行にできる", "秒" in talker.speed(), talker.speed())
+    check("トークン数も添える", "120トークン" in talker.speed(), talker.speed())
+    check("待ち時間を変えても喋れる",
+          "届いた" in critique.Llama("試験", where, 7200)("指示", "本文"))
+finally:
+    pretend.shutdown()
+
+
+print("\n== 手元のモデルを見つける ==")
+# 書き並べた一覧では、実際に何が使えるのか分からない。
+# 置き場を実際に見る。llama.cpp の版で場所が違い、実際に外した
+with TemporaryDirectory() as folder:
+    hub = Path(folder) / "models--unsloth--Qwen3.8-27B-GGUF" / "snapshots" / "ab"
+    hub.mkdir(parents=True)
+    (hub / "Qwen3.8-27B-Q4_K_M.gguf").write_bytes(b"x" * 2048)
+    (hub / "mmproj-BF16.gguf").write_bytes(b"x" * 16)
+    (hub / "Qwen3.8-27B-UD-Q3_K_XL-00001-of-00002.gguf").write_bytes(b"x" * 32)
+    (hub / "Qwen3.8-27B-UD-Q3_K_XL-00002-of-00002.gguf").write_bytes(b"x" * 32)
+
+    found = critique.downloaded_models(folder)
+    names = [path.name for path in found]
+    check("落ちている GGUF を見つける", len(found) == 2, str(names))
+    check("mmproj は出さない", not any("mmproj" in n for n in names), str(names))
+    check("分割は1つ目だけ出す",
+          sum("of-00002" in n for n in names) == 1, str(names))
+
+    single = next(p for p in found if "Q4_K_M" in p.name)
+    check("リポジトリ名を戻せる",
+          critique.repo_of(single) == "unsloth/Qwen3.8-27B-GGUF",
+          critique.repo_of(single))
+    check("量子化を取れる", critique.quant_of(single) == "Q4_K_M",
+          critique.quant_of(single))
+    check("-hf に渡せる形にする",
+          critique.hf_name(single) == "unsloth/Qwen3.8-27B-GGUF:Q4_K_M",
+          critique.hf_name(single))
+    check("大きさを添える", "GB)" in critique.describe_downloaded(single))
+
+    split = next(p for p in found if "of-00002" in p.name)
+    check("分割でも量子化を取れる",
+          critique.quant_of(split) == "UD-Q3_K_XL", critique.quant_of(split))
+
+with TemporaryDirectory() as empty:
+    check("何も無ければ空", critique.downloaded_models(empty) == [])
+check("置き場は実在するものだけ返す",
+      all(place.exists() for place in critique.model_folders()))
+
+# HuggingFace の外に置いたファイルは、リポジトリ名が分からない
+with TemporaryDirectory() as loose:
+    stray = Path(loose) / "手で置いた-Q5_K_M.gguf"
+    stray.write_bytes(b"x" * 16)
+    check("リポジトリの外なら空を返す", critique.repo_of(stray) == "")
+    check("その場合はファイル名を使う",
+          critique.hf_name(stray) == "手で置いた-Q5_K_M",
+          critique.hf_name(stray))
+
+# 載っているモデルをサーバに訊く。--model は無視されるので、
+# 訊かないと記録が自己申告のままになる
+class Roster(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = json.dumps({"data": [{"id": "本当に載っているモデル"}]})
+        raw = body.encode("utf-8")
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    def log_message(self, *ignored):
+        pass
+
+
+roster = HTTPServer(("127.0.0.1", 0), Roster)
+threading.Thread(target=roster.serve_forever, daemon=True).start()
+port = roster.server_address[1]
+try:
+    asker = critique.Llama("申告した名前",
+                           f"http://127.0.0.1:{port}/v1/chat/completions")
+    check("載っているモデルを訊ける",
+          asker.loaded() == "本当に載っているモデル", asker.loaded())
+finally:
+    roster.shutdown()
+
+# 立っていない窓口でも落ちない。訊けないなら空を返す
+check("届かなければ空を返す",
+      critique.Llama("x", "http://127.0.0.1:1/v1/chat/completions"
+                     ).loaded(timeout=1) == "")
+
+args = critique.build_parser().parse_args([str(NOVEL), "--llama"])
+args.llama_loaded = "本当に載っているモデル"
+check("訊いた名前を記録に残す",
+      "本当に載っているモデル" in critique.used_model(args))
+args.model = "書いただけの名前"
+check("申告と食い違えば両方残す",
+      "書いただけの名前" in critique.used_model(args)
+      and "本当に載っているモデル" in critique.used_model(args),
+      critique.used_model(args))
+args.llama_loaded = ""
+check("訊けなかったことを隠さない",
+      "未確認" in critique.used_model(args), critique.used_model(args))
 
 
 print("\n== 検分にかける ==")
