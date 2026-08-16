@@ -33,7 +33,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
-from . import critique, review
+from . import critique, review, rubric
 from .answer import MARK_BAD, MARK_OK, annotate, attach, find_quotes
 from .connect import recurrences
 from .manuscript import MANUSCRIPTS, Manuscript
@@ -709,8 +709,11 @@ def annotated_text(body):
     records = critique.annotation_records(
         args, manuscript, [body.get("label", "")])
     title = manuscript.title or "原稿"
+    # 採点なら点数を検算して見出しに残す
+    axes = rubric.AXES if args.mode == "採点" else ()
     return {"name": f"{title}_添削.txt",
-            "text": annotate(body.get("answer", ""), manuscript, records)}
+            "text": annotate(body.get("answer", ""), manuscript, records,
+                             axes=axes)}
 
 
 def run_ask(body):

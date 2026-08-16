@@ -16,7 +16,8 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
 
 from centurion.answer import (MARK_BAD, MARK_OK, anchoring, annotate, attach,
-                              find_quotes, report_anchoring, report_quotes)
+                              check_scores, claimed_total, find_quotes,
+                              report_anchoring, report_quotes, scores)
 from centurion.manuscript import Manuscript
 
 passed = failed = 0
@@ -163,6 +164,71 @@ plain = annotate("全体としてよく書けている。", work)
 check("番号の無い答えでも添削を作れる", "段落を指していない指摘" in plain)
 check("そのときも本文は全部入る",
       all(p.text in plain for p in work.paragraphs))
+
+print("\n== 採点の検算 ==")
+# 実測: LFM2.5-1.2B が 4+3+5+5+4+5+4=30 を「合計点 16/35」と書いた。
+# 引用の照合と同じで、これは本文を読まずに確かめられる
+AXES = ("構成・プロット", "キャラクター", "文章・文体", "描写",
+        "対話", "テーマ・主題", "世界観・設定")
+SOUND = """# 講評
+## 1. 構成・プロット: 4/5
+## 2. キャラクター: 3/5
+## 3. 文章・文体: 5/5
+## 4. 描写: 5/5
+## 5. 対話: 4/5
+## 6. テーマ・主題: 5/5
+## 7. 世界観・設定: 4/5
+## 総評
+合計点 30/35。"""
+
+found = scores(SOUND)
+check("七観点すべて拾う", len(found) == 7, str(len(found)))
+check("番号を拾う", [n for n, _, _ in found] == list(range(1, 8)))
+check("観点名を拾う", found[0][1] == "構成・プロット")
+check("点数を拾う", [p for _, _, p in found] == [4, 3, 5, 5, 4, 5, 4])
+check("合計を拾う", claimed_total(SOUND) == 30)
+
+check("合っていれば一行だけ", len(check_scores(SOUND, AXES)) == 1,
+      str(check_scores(SOUND, AXES)))
+check("合計を出す", "合計 30点" in check_scores(SOUND, AXES)[0])
+
+wrong = SOUND.replace("合計点 30/35", "合計点 16/35")
+lines = check_scores(wrong, AXES)
+check("合計の食い違いを見つける",
+      any("合計が合わない" in line for line in lines), str(lines))
+check("正しい和を示す", any("和は30点" in line for line in lines))
+check("書かれた合計も示す", any("16点" in line for line in lines))
+
+lines = check_scores(SOUND.replace("\n合計点 30/35。", ""), AXES)
+check("合計が無ければ言う",
+      any("合計点が書かれていない" in line for line in lines), str(lines))
+
+short = "\n".join(SOUND.splitlines()[:4]) + "\n合計点 7/35。"
+lines = check_scores(short, AXES)
+check("抜けた観点を名指しする",
+      any("描写" in line and "抜けている" in line for line in lines),
+      str(lines))
+
+over = SOUND.replace("## 4. 描写: 5/5", "## 4. 描写: 7/5")
+check("範囲外の点数を見つける",
+      any("範囲外" in line for line in check_scores(over, AXES)))
+
+check("採点の形でなければそう言う",
+      "採点の形になっていない" in check_scores("よく書けている。", AXES)[0])
+
+# 見出し記号やコロンの揺れで取りこぼすと、検算が黙って素通りする
+for shape in ["### 1. 構成・プロット：4/5", "1. 構成・プロット: 4/5",
+              "## 1．構成・プロット: 4 / 5", "**1. 構成・プロット**: 4/5"]:
+    check(f"{shape[:14]}… の形も読める", len(scores(shape)) == 1, shape)
+check("全角の合計も読める", claimed_total("合計点 30／35") == 30)
+check("合計点の直後に語が続いても読める",
+      claimed_total("合計点: 21/35。作品は…") == 21)
+
+# 添削ファイルの見出しにも出す
+graded = annotate(wrong, work, axes=AXES)
+check("添削ファイルに検算が入る", "合計が合わない" in graded)
+check("採点でなければ検算しない", "合計が合わない" not in annotate(wrong, work))
+
 
 print(f"\n{passed}件通過 / {failed}件失敗")
 raise SystemExit(1 if failed else 0)

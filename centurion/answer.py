@@ -123,7 +123,7 @@ def attach(answer, manuscript):
     return preamble, notes
 
 
-def annotate(answer, manuscript, records=()):
+def annotate(answer, manuscript, records=(), axes=()):
     """本文の各段落の下に、その段落あての指摘を貼った文章を作る。
 
     照合に落ちた指摘には印を付ける。信じてよいものと捨てるものを
@@ -159,6 +159,11 @@ def annotate(answer, manuscript, records=()):
                        f"{MARK_BAD} の付いた指摘は捨てること")
     elif total:
         out.append("# 引用が一つも無い。照合できるものが無いということでもある")
+
+    # 採点なら点数を検算する。合計の書き間違いは実際に起きている
+    if axes:
+        for line in check_scores(answer, axes):
+            out.append("# " + line.strip())
     out.append("")
 
     if preamble:
@@ -232,3 +237,70 @@ def report_quotes(quotes):
         lines.append(f"  うち{len(invented)}件は本文に存在しない文。"
                      "モデルが作っている")
     return "\n".join(lines)
+
+
+# ===== 採点の検算 =====
+# 実測「運命の九十分」を LFM2.5-1.2B に採点させたところ、
+# 4+3+5+5+4+5+4 = 30 を「合計点 16/35」と書いた。
+# 引用の照合と同じで、これは機械が確かめられる。
+# モデルが強くなっても算術は外すので、検査は残す価値がある
+
+# モデルは見出しの書き方を揃えてくれない。実際に出た形:
+#   ## 1. 構成・プロット: 4/5      ### 3. 文章・文体：5/5
+#   **1. 構成・プロット**: 4/5     1．構成・プロット: 4 / 5
+# 取りこぼすと検算が黙って素通りするので、書き方の揺れは広く許す。
+# 行頭の空白に \s を使わないのは、re.M でも改行をまたがせないため
+SCORE_LINE = re.compile(
+    r"^[ \t　]*#{0,4}[ \t　]*[*_]{0,2}[ \t　]*(\d+)[ \t　]*[.．][ \t　]*"
+    r"([^:：\n]+?)[ \t　]*[:：][ \t　]*(\d+)[ \t　]*[/／][ \t　]*5",
+    re.M)
+TOTAL_LINE = re.compile(r"合計点[^0-9\n]{0,6}(\d+)[ \t　]*[/／][ \t　]*35")
+
+
+def scores(answer):
+    """採点の答えから (番号, 観点, 点数) を取り出す"""
+    return [(int(number), axis.strip(" 　*_"), int(point))
+            for number, axis, point in SCORE_LINE.findall(answer)]
+
+
+def claimed_total(answer):
+    """モデルが書いた合計点。書いていなければ None"""
+    found = TOTAL_LINE.search(answer)
+    return int(found.group(1)) if found else None
+
+
+def check_scores(answer, axes):
+    """採点の答えを検算する。人が読む行の並びを返す。
+
+    見るのは三つ。観点が抜けていないか、点数が範囲内か、合計が合うか。
+    どれも本文を読まずに確かめられるものだけにしてある"""
+    found = scores(answer)
+    if not found:
+        return ["採点の形になっていない。"
+                "「## 1. 構成・プロット: 4/5」の形で出させること"]
+
+    lines = []
+    given = [point for _, _, point in found]
+    lines.append(f"採点 {len(found)}観点 / 合計 {sum(given)}点")
+
+    named = [axis for _, axis, _ in found]
+    missing = [axis for axis in axes
+               if not any(axis in name or name in axis for name in named)]
+    if missing:
+        lines.append(f"  抜けている観点 {len(missing)}件: "
+                     f"{'、'.join(missing)}")
+    if len(found) > len(axes):
+        lines.append(f"  観点が多い。{len(axes)}個のはずが{len(found)}個ある")
+
+    outside = [(axis, point) for _, axis, point in found
+               if not 1 <= point <= 5]
+    for axis, point in outside:
+        lines.append(f"  {axis} が範囲外の {point}点")
+
+    total = claimed_total(answer)
+    if total is None:
+        lines.append("  合計点が書かれていない")
+    elif total != sum(given):
+        lines.append(f"  合計が合わない。書かれた合計は{total}点だが、"
+                     f"各観点の和は{sum(given)}点")
+    return lines

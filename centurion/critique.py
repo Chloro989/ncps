@@ -33,8 +33,8 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from .answer import (annotate, anchoring, find_quotes, report_anchoring,
-                     report_quotes)
+from .answer import (annotate, anchoring, check_scores, find_quotes,
+                     report_anchoring, report_quotes)
 from .connect import (DREAM_WORK, MIN_CHARS, build_chain_prompt,
                       build_connection_prompt, distant_pairs, recurrences,
                       use_morphology)
@@ -272,6 +272,24 @@ def warn_lenses(count):
               file=sys.stderr)
 
 
+def warn_partial_score(chunks, chunk, args):
+    """採点で原稿の一部しか見ていないときに言う。
+
+    採点は作品全体に対する評価なのに、既定では先頭の塊しか渡らない。
+    実測では5分割の1つ目だけを見て「合計点 16/35」と全体評価が出た。
+    どこを見た点数なのかが分からないまま溜まると、比べられなくなる"""
+    if args.mode != "採点" or len(chunks) <= 1 or args.all:
+        return
+    where = chunks.index(chunk) + 1
+    whole = sum(len(p.text) for part in chunks
+                for p in part.paragraphs[part.carried:])
+    print(f"# 注意: {len(chunks)}つに分けたうちの{where}つ目だけを採点している。"
+          f"作品全体の点数ではない。\n"
+          f"#   全体を見せるなら --size {whole + 500} 以上にするか、"
+          f"--all で塊ごとに採点すること",
+          file=sys.stderr)
+
+
 def compose(manuscript, args, chunk=None, nudge=0):
     """モードに応じて (指示, 本文, 見せた段落, 添える説明) を作る。
 
@@ -283,6 +301,7 @@ def compose(manuscript, args, chunk=None, nudge=0):
     if args.mode in ("発想", "査読", "採点"):
         chunks, picked = pick_chunk(manuscript, args.size, args.chunk)
         chunk = chunk or picked
+        warn_partial_score(chunks, chunk, args)
         # 採点は7観点が固定なので、観点を選ばない
         lenses, how = (pick_lenses(chunk, args, rng)
                        if uses_lenses(args.mode) else ((), ""))
@@ -511,15 +530,24 @@ def run_check(manuscript, args):
     print()
     print(report_quotes(quotes))
 
+    # 外で解かせた採点も検算する。ここが --mode 採点 を渡す唯一の理由
+    counted = score_lines(answer, args.mode)
+    bad = bool(missing or outside or any(not q.ok for q in quotes)
+               or len(counted) > 1)
+    if counted:
+        print()
+        print("\n".join(counted))
+
     if args.out:
         write_annotated(args.out, answer, manuscript,
                         annotation_records(args, manuscript,
-                                           source=args.check))
-        return 1 if missing or outside or any(not q.ok for q in quotes) else 0
+                                           source=args.check),
+                        mode=args.mode)
+        return 1 if bad else 0
 
     print("\n--- 番号を本文に戻したもの ---")
     print(resolve(answer, manuscript))
-    return 1 if missing or outside or any(not q.ok for q in quotes) else 0
+    return 1 if bad else 0
 
 
 def used_model(args):
@@ -590,8 +618,10 @@ def annotation_records(args, manuscript, labels=(), source="", outcome=""):
     return records
 
 
-def write_annotated(path, answer, manuscript, records=()):
-    text = annotate(answer, manuscript, records=records)
+def write_annotated(path, answer, manuscript, records=(), mode=""):
+    # 採点なら、添削ファイルの見出しにも検算を残す
+    axes = rubric.AXES if mode == "採点" else ()
+    text = annotate(answer, manuscript, records=records, axes=axes)
     with open(path, "w", encoding="utf-8") as out:
         out.write(text + "\n")
     print(f"# 添削を {path} に書いた", file=sys.stderr)
@@ -697,12 +727,14 @@ def verify_outcome(note):
     return ""
 
 
-def report(answer, manuscript, allowed):
+def report(answer, manuscript, allowed, mode=""):
     """答えを検査して、気になるものだけ伝える。
 
     番号の実在と、引用の中身の両方を見る。
     番号だけの検査では、Qwen が引用14件中8件を取り違えた答えを
-    「実在18件」として素通りさせた"""
+    「実在18件」として素通りさせた。
+    採点モードならさらに点数を検算する — LFM2.5 が
+    4+3+5+5+4+5+4=30 を「合計点 16/35」と書いた"""
     real, missing, outside = check_citations(answer, manuscript,
                                              allowed=allowed)
     parts = [f"実在{len(real)}件"]
@@ -724,8 +756,19 @@ def report(answer, manuscript, allowed):
     quotes = find_quotes(answer, manuscript)
     for line in report_quotes(quotes).splitlines():
         print("# " + line, file=sys.stderr)
+
+    counted = score_lines(answer, mode)
+    for line in counted:
+        print("# " + line, file=sys.stderr)
+
     return bool(missing or outside or [q for q in quotes if not q.ok]
-                or (total and anchored / total < 0.5))
+                or (total and anchored / total < 0.5)
+                or len(counted) > 1)
+
+
+def score_lines(answer, mode):
+    """採点モードなら検算の行を返す。それ以外では空"""
+    return check_scores(answer, rubric.AXES) if mode == "採点" else []
 
 
 def main(argv=None):
@@ -799,7 +842,7 @@ def main(argv=None):
                 print("# " + line, file=sys.stderr)
             outcome = verify_outcome(how)
         print(answer)
-        report(answer, manuscript, allowed)
+        report(answer, manuscript, allowed, args.mode)
         collected.append((answer, label, outcome))
 
     if args.out:
