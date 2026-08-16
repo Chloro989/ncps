@@ -331,6 +331,19 @@ except SystemExit:
 check("知らない厳しさは受け付けない", refused)
 
 
+print("\n== 待ち時間 ==")
+# GPUに載りきらないモデルを一部CPUで回すと、生成が桁違いに遅くなる。
+# 既定の待ち時間が短いと、答えが出る前に切れる
+args = critique.build_parser().parse_args([str(NOVEL)])
+check("既定の待ち時間は1時間", args.llama_timeout == 3600)
+check("待ち時間を延ばせる",
+      critique.build_parser().parse_args(
+          [str(NOVEL), "--llama-timeout", "7200"]).llama_timeout == 7200)
+check("解き手に待ち時間が渡る",
+      critique.Llama("x", "http://127.0.0.1:1/v1", 7200).timeout == 7200)
+check("速さは解く前には出ない", critique.Llama().speed() == "")
+
+
 print("\n== 検分にかける ==")
 manuscript = Manuscript.load(NOVEL)
 ANSWER = ("- [0] の灯りは伏線になっていない。二度目を置くべきだ。\n"

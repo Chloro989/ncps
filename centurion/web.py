@@ -625,7 +625,8 @@ def solver_for(args):
     if args.api:
         return critique.Api(args.model or critique.API_MODEL)
     if args.llama:
-        return critique.Llama(args.model or "", args.llama_url)
+        return critique.Llama(args.model or "", args.llama_url,
+                              args.llama_timeout)
     return critique.Local(args.model or critique.LOCAL_MODEL)
 
 

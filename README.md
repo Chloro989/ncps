@@ -66,7 +66,7 @@ python main.py web
 | `check` | 回答の検査と添削ファイル出力 | 不要 |
 | `write` | 小説生成 (試作) | 必須 |
 | `prompts` | プロンプトの文面を `prompts/` に書き出す | 不要 |
-| `test` | テスト実行 (721 件) | 不要 |
+| `test` | テスト実行 (725 件) | 不要 |
 
 `read` / `ask` / `check` は同一のパーサを共有する。
 
@@ -157,6 +157,38 @@ python main.py ask 原稿.txt --llama --model LFM2.5-1.2B-JP
 **制約:** `llama-server` は起動時に読み込んだモデル 1 つのみを提供する。
 `--model` はサーバに送信されるが**無視される**ため、記録用のラベルとして機能する。
 複数モデルを使う場合はポートを分けてサーバを複数起動する。
+
+### VRAM に収まらないモデル
+
+`-ngl 99` は全レイヤーを GPU に置く指定。VRAM を超えると起動失敗、
+または極端に低速になる。収まらない場合は CPU との分割が必要。
+
+```bash
+llama-server -m model.gguf --port 8081 \
+  -ngl 32 -fa on --cache-type-k q8_0 --cache-type-v q8_0 -c 12288
+```
+
+| フラグ | 効果 |
+|---|---|
+| `-ngl N` | GPU に置くレイヤー数。残りは CPU |
+| `-fa on` | Flash Attention。KV キャッシュの量子化に必要 |
+| `--cache-type-k/v q8_0` | KV キャッシュを 8bit 化。VRAM 使用量が約半分 |
+| `--n-cpu-moe N` | MoE モデル限定。エキスパートのみ CPU に置く |
+| `-ot "正規表現=CPU"` | 特定テンソルを CPU に置く |
+
+MoE モデルでは `--n-cpu-moe` が最も効率的。
+活性パラメータが少ないため、エキスパートを CPU に置いても速度低下が小さい。
+
+起動ログの `load_tensors:` 行で各デバイスへの配分量を確認できる。
+`-ngl` を 4〜8 ずつ増減させて、VRAM に収まる最大値を探す。
+
+CPU 分割時は生成速度が大きく低下するため待ち時間を延長する。
+
+```bash
+python main.py ask 原稿.txt --llama --llama-timeout 7200
+```
+
+既定は 3600 秒。実行後に `1240秒で3812トークン (3.1 tok/s)` が表示される。
 
 `write` の抑圧処理はロジット操作を必要とするため llama.cpp では動作しない。
 論評系は抑圧を使わないので影響しない。

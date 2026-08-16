@@ -28,6 +28,7 @@ import json
 import os
 import random
 import sys
+import time
 import urllib.error
 import urllib.request
 from datetime import datetime
@@ -61,6 +62,12 @@ API_VERSION = "2023-06-01"
 # 小説を書かせる側の抑圧(type5設定)は使えない。
 # ただし論評では抑圧を使っていないため、こちらは問題にならない
 LLAMA_URL = "http://127.0.0.1:8080/v1/chat/completions"
+
+# 待ち時間の上限(秒)。既定を1時間にしてあるのは、GPUに載りきらない
+# 大きいモデルを一部CPUで回すと生成が桁違いに遅くなるため。
+# 12GBのGPUに27Bを載せると2〜3 tok/s まで落ち、
+# --tokens 4000 の生成に30分では足りないことがある
+LLAMA_TIMEOUT = 3600
 
 # 画面の選択肢に出す名前。ここに無いものも自由に打ち込めるので、
 # 一覧は「よく使うものの近道」であって制限ではない。
@@ -122,9 +129,10 @@ class Llama:
     GGUF を手元に落としてあるなら -m 置き場所.gguf でもよい。
     AMD のGPUを使うなら Vulkan 版の llama.cpp を入れること"""
 
-    def __init__(self, model="", url=LLAMA_URL):
+    def __init__(self, model="", url=LLAMA_URL, timeout=LLAMA_TIMEOUT):
         self.model = model or "local"
         self.url = url
+        self.timeout = timeout
 
     def __call__(self, head, body, max_tokens=MAX_TOKENS):
         return self.chat([{"role": "system", "content": head},
@@ -140,20 +148,45 @@ class Llama:
         request = urllib.request.Request(
             self.url, data=payload,
             headers={"content-type": "application/json"})
+        started = time.monotonic()
         try:
-            with urllib.request.urlopen(request, timeout=1800) as response:
+            with urllib.request.urlopen(request, self.timeout) as response:
                 answer = json.load(response)
         except urllib.error.HTTPError as problem:
             detail = problem.read().decode("utf-8", "replace")[:400]
             raise SystemExit(f"llama-server が断った "
                              f"({problem.code}): {detail}")
+        except TimeoutError:
+            raise SystemExit(
+                f"llama-server が {self.timeout}秒で返さなかった。\n"
+                "  サーバ側では生成が続いているので、待てば終わる見込みがある。\n"
+                f"  --llama-timeout {self.timeout * 2} で待ち時間を延ばすか、\n"
+                "  --tokens を減らすか、GPUに載せる層を増やすこと")
         except urllib.error.URLError as problem:
+            # 待ち時間切れは URLError に包まれて来ることがある
+            if isinstance(problem.reason, TimeoutError):
+                raise SystemExit(
+                    f"llama-server が {self.timeout}秒で返さなかった。\n"
+                    f"  --llama-timeout {self.timeout * 2} で延ばすか、"
+                    "--tokens を減らすこと")
             raise SystemExit(
                 f"llama-server に届かない ({self.url}): {problem.reason}\n"
                 "先に別の窓でサーバを立てること:\n"
                 "  llama-server -hf LiquidAI/LFM2.5-1.2B-JP-202606-GGUF"
                 " --port 8080")
+        self.elapsed = time.monotonic() - started
+        self.produced = (answer.get("usage") or {}).get("completion_tokens")
         return answer["choices"][0]["message"]["content"]
+
+    def speed(self):
+        """直前の生成の速さ。層の割り振りを決める材料になる"""
+        if not getattr(self, "elapsed", 0):
+            return ""
+        line = f"{self.elapsed:.0f}秒"
+        if self.produced:
+            line += (f"で{self.produced}トークン "
+                     f"({self.produced / self.elapsed:.1f} tok/s)")
+        return line
 
 
 class Api:
@@ -407,6 +440,12 @@ def build_parser():
     parser.add_argument("--llama", action="store_true",
                         help="立ててある llama-server に解かせる。"
                              "AMDのGPUでも動く")
+    parser.add_argument("--llama-timeout", type=int, default=LLAMA_TIMEOUT,
+                        metavar="秒",
+                        help=f"llama-server を待つ上限秒数 "
+                             f"(既定 {LLAMA_TIMEOUT})。"
+                             "GPUに載りきらないモデルを一部CPUで回すと"
+                             "生成が桁違いに遅くなるので、そのときは延ばす")
     parser.add_argument("--llama-url", default=LLAMA_URL,
                         help=f"llama-server の窓口 (既定 {LLAMA_URL})")
     parser.add_argument("--all", action="store_true",
@@ -659,7 +698,8 @@ def verifier(args):
         else:
             where = f"llama.cpp {url}" + (f" / {args.verify_model}"
                                           if args.verify_model else "")
-        return Llama(args.verify_model or "", url), where
+        return Llama(args.verify_model or "", url,
+                     args.llama_timeout), where
     model = args.verify_model or args.model or LOCAL_MODEL
     return Local(model), f"{model} (手元)"
 
@@ -822,7 +862,8 @@ def main(argv=None):
     elif args.llama:
         print(f"# {args.llama_url} の llama-server に訊いています…",
               file=sys.stderr)
-        solve = Llama(args.model or "", args.llama_url)
+        solve = Llama(args.model or "", args.llama_url,
+                      args.llama_timeout)
     else:
         model = args.model or LOCAL_MODEL
         print(f"# {model} を読み込んでいます…", file=sys.stderr)
@@ -834,6 +875,10 @@ def main(argv=None):
         if index:
             print("\n" + "=" * 64 + "\n")
         answer = solve(head, body, args.tokens)
+        # 何 tok/s 出ているかを見せる。層の割り振りを詰めるときの材料になる
+        pace = solve.speed() if hasattr(solve, "speed") else ""
+        if pace:
+            print(f"# {pace}", file=sys.stderr)
         outcome = ""
         if args.verify:
             print("# 検分にかけています…", file=sys.stderr)
