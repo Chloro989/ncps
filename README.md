@@ -158,29 +158,56 @@ python main.py ask 原稿.txt --llama --model LFM2.5-1.2B-JP
 `--model` はサーバに送信されるが**無視される**ため、記録用のラベルとして機能する。
 複数モデルを使う場合はポートを分けてサーバを複数起動する。
 
+### モデルの指定
+
+`-hf` と `-m` は別物。
+
+| フラグ | 引数 | 例 |
+|---|---|---|
+| `-hf` | HuggingFace のリポジトリ名 | `-hf unsloth/Qwen3.8-27B-GGUF:Q4_K_M` |
+| `-m` | ローカルのファイルパス | `-m C:\models\model.gguf` |
+
+`-m` にリポジトリ名を渡すと `failed to open GGUF file` になる。
+
+リポジトリには複数の量子化が入っているため、`-hf` では
+`:Q4_K_M` のように量子化名を付ける。省略すると既定が選ばれる。
+
 ### VRAM に収まらないモデル
 
 `-ngl 99` は全レイヤーを GPU に置く指定。VRAM を超えると起動失敗、
 または極端に低速になる。収まらない場合は CPU との分割が必要。
 
 ```bash
-llama-server -m model.gguf --port 8081 \
-  -ngl 32 -fa on --cache-type-k q8_0 --cache-type-v q8_0 -c 12288
+llama-server -hf unsloth/Qwen3.8-27B-GGUF:Q4_K_M --port 8081 \
+  -ngl 36 -fa on --cache-type-k q8_0 --cache-type-v q8_0 -c 12288
 ```
 
-| フラグ | 効果 |
-|---|---|
-| `-ngl N` | GPU に置くレイヤー数。残りは CPU |
-| `-fa on` | Flash Attention。KV キャッシュの量子化に必要 |
-| `--cache-type-k/v q8_0` | KV キャッシュを 8bit 化。VRAM 使用量が約半分 |
-| `--n-cpu-moe N` | MoE モデル限定。エキスパートのみ CPU に置く |
-| `-ot "正規表現=CPU"` | 特定テンソルを CPU に置く |
+| フラグ | 効果 | 適用範囲 |
+|---|---|---|
+| `-ngl N` | GPU に置くレイヤー数。残りは CPU | 全モデル |
+| `-fa on` | Flash Attention。KV キャッシュの量子化に必要 | 全モデル |
+| `--cache-type-k/v q8_0` | KV キャッシュを 8bit 化。使用量が約半分 | 全モデル |
+| `--n-cpu-moe N` | エキスパートのみ CPU に置く | **MoE のみ** |
+| `-ot "正規表現=CPU"` | 特定テンソルを CPU に置く | 全モデル |
 
-MoE モデルでは `--n-cpu-moe` が最も効率的。
-活性パラメータが少ないため、エキスパートを CPU に置いても速度低下が小さい。
+`--n-cpu-moe` は MoE モデルにしか効かない。
+密なモデルに指定しても無視される。
+MoE かどうかはモデル名で判別できる (`A3B` = 活性 3B の MoE)。
 
 起動ログの `load_tensors:` 行で各デバイスへの配分量を確認できる。
 `-ngl` を 4〜8 ずつ増減させて、VRAM に収まる最大値を探す。
+
+### 12GB クラスの GPU でのモデル選択
+
+| モデル | 種別 | Q4_K_M | 12GB での挙動 |
+|---|---|---|---|
+| 27B 密 | dense | 約 16.5GB | 4 割を CPU。2〜4 tok/s |
+| 35B-A3B | MoE | 約 21GB | エキスパートを CPU。10〜20 tok/s |
+| 8B 密 | dense | 約 5GB | 全て GPU。30 tok/s 以上 |
+
+MoE は総パラメータが大きくても活性パラメータが少ないため、
+エキスパートを CPU (RAM) に置いても速度低下が小さい。
+VRAM が限られる環境では、同じ待ち時間でより大きなモデルを使える。
 
 CPU 分割時は生成速度が大きく低下するため待ち時間を延長する。
 

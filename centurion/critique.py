@@ -126,7 +126,10 @@ class Llama:
 
         llama-server -hf LiquidAI/LFM2.5-1.2B-JP-202606-GGUF --port 8080
 
-    GGUF を手元に落としてあるなら -m 置き場所.gguf でもよい。
+    -hf は HuggingFace のリポジトリ名、-m は手元のファイルパス。
+    -m にリポジトリ名を渡すと failed to open GGUF file になる。
+    リポジトリには複数の量子化が入っているので :Q4_K_M のように付ける。
+
     AMD のGPUを使うなら Vulkan 版の llama.cpp を入れること"""
 
     def __init__(self, model="", url=LLAMA_URL, timeout=LLAMA_TIMEOUT):
